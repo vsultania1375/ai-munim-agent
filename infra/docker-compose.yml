@@ -1,0 +1,37 @@
+# Bot + Caddy on the server. ERPNext runs as its own compose project (frappe_docker),
+# joined through its network. Secrets live in /opt/aimunim/bot.env and /opt/aimunim/pool.
+services:
+  bot:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    env_file: /opt/aimunim/bot.env
+    volumes:
+      - bot-state:/app/.run
+      - /opt/aimunim/pool:/app/pool:ro
+    restart: unless-stopped
+    networks: [default, erpnext]
+    mem_limit: 2g  # whisper small int8 ~0.6 GB
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    depends_on: [bot]
+    networks: [default, erpnext]  # reaches the ERPNext frontend for the web desk
+
+volumes:
+  bot-state:
+  caddy-data:
+  caddy-config:
+
+networks:
+  erpnext:
+    name: erpnext_frappe_network
+    external: true

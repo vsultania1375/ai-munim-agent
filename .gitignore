@@ -1,0 +1,28 @@
+# secrets
+.env
+.env.*
+!.env.example
+pool/
+secrets.env
+
+# runtime data (conversation state, audit, generated PDFs, uploads)
+.run/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# local exports / chat dumps
+*.zip
+*.sqlite
+*.db
+.DS_Store
+
+# pre-downloaded wheels for offline image builds (infra/fetch_wheels.sh)
+wheels/*
+!wheels/.keep

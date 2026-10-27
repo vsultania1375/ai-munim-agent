@@ -1,0 +1,42 @@
+[project]
+name = "ai-munim-agent"
+version = "0.1.0"
+description = "WhatsApp agent that runs a small Indian business's ERPNext: bills, quotations, payments, onboarding and data import."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27",
+  "pydantic>=2.7",
+  "rapidfuzz>=3.9",
+  "anthropic>=2.0",
+  "pypdf>=5.0",
+  "pypdfium2>=4.30",
+  "Pillow>=10.4",
+  "segno>=1.6",
+  "mcp>=2.3,<3",
+  "cryptography>=42",  # Razorpay keys encrypted at rest
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+voice = ["faster-whisper>=1.0", "piper-tts>=1.3"]  # local speech-to-text on the server (audio decoded with system ffmpeg)
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["munim*"]
+
+[tool.setuptools.package-data]
+munim = ["core/*.html"]  # the MCP Apps card
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]

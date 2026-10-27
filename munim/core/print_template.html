@@ -1,0 +1,68 @@
+<!--munim-brand:__BRAND_JSON__-->
+<style>
+.mb{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;font-size:11px;color:#222;line-height:1.45}
+.mb table{width:100%;border-collapse:collapse}
+.mb .title{display:inline-block;background:__PRIMARY__;color:#fff;font-size:16px;font-weight:bold;letter-spacing:1.5px;padding:7px 14px}
+.mb .rule{border-top:3px solid __ACCENT__;margin:10px 0 12px}
+.mb .mlabel{border:0;padding:0;color:__PRIMARY__;font-size:9px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;margin-bottom:3px}
+.mb .items th{background:__PRIMARY__;color:#fff;padding:7px 6px;text-align:left;font-size:9.5px;letter-spacing:.5px;text-transform:uppercase}
+.mb .items td{padding:7px 6px;border-bottom:1px solid #e6e6e6;vertical-align:top}
+.mb .items tr.z td{background:__TINT__}
+.mb .r,.mb .items th.r{text-align:right !important}
+.mb .tot td{padding:4px 6px}
+.mb .grand td{font-size:13.5px;font-weight:bold;color:#fff;background:__PRIMARY__;padding:8px 6px}
+.mb .box{border:1px solid #e0e0e0;border-left:4px solid __ACCENT__;padding:8px 10px}
+.mb .muted{color:#666;font-size:9.5px}
+</style>
+{%- if doc.doctype == "Sales Invoice" -%}
+  {%- set title = "CREDIT NOTE" if doc.is_return else ("TAX INVOICE" if doc.company_gstin else "INVOICE") -%}
+{%- elif doc.doctype == "Quotation" -%}{%- set title = "QUOTATION" -%}
+{%- elif doc.doctype == "Sales Order" -%}{%- set title = "ORDER CONFIRMATION" -%}
+{%- else -%}{%- set title = "DELIVERY CHALLAN" -%}{%- endif -%}
+<div class="mb">
+<table><tr>
+<td style="width:58%;vertical-align:middle">__LOGO__
+  <div style="font-size:16px;font-weight:bold;color:__PRIMARY__;margin-top:4px">{{ doc.company }}</div>
+  __TAGLINE__
+  <div class="muted">{{ (doc.company_address_display or "") | safe }}{% if doc.company_gstin %}GSTIN: <b>{{ doc.company_gstin }}</b>{% endif %}</div>
+</td>
+<td class="r" style="vertical-align:middle"><span class="title">{{ title }}</span>
+  <div style="margin-top:8px;font-size:12px"><b>{{ doc.name }}</b></div>
+  <div class="muted">Date: {{ frappe.utils.formatdate(doc.posting_date or doc.transaction_date) }}
+  {%- if doc.due_date %}<br>Due: {{ frappe.utils.formatdate(doc.due_date) }}{% endif %}
+  {%- if doc.return_against %}<br>Against: {{ doc.return_against }}{% endif %}
+  {%- if doc.place_of_supply %}<br>Place of supply: {{ doc.place_of_supply }}{% endif %}</div>
+</td></tr></table>
+<div class="rule"></div>
+<table><tr><td style="width:58%;vertical-align:top">
+  <div class="mlabel">{{ "Billed to" if doc.doctype == "Sales Invoice" else ("Deliver to" if doc.doctype == "Delivery Note" else "For") }}</div>
+  <div style="font-size:12.5px;font-weight:bold">{{ doc.customer_name or doc.party_name }}</div>
+  <div class="muted">{{ (doc.address_display or "") | safe }}{% if doc.billing_address_gstin %}GSTIN: <b>{{ doc.billing_address_gstin }}</b>{% endif %}</div>
+</td><td></td></tr></table>
+<table class="items" style="margin-top:12px">
+<tr><th style="width:4%">#</th><th>Item</th><th style="width:11%">HSN</th><th class="r" style="width:12%">Qty</th><th class="r" style="width:14%">Rate</th><th class="r" style="width:16%">Amount</th></tr>
+{%- for item in doc.items %}
+<tr class="{{ 'z' if loop.index % 2 == 0 else '' }}"><td>{{ loop.index }}</td><td><b>{{ item.item_name }}</b>{% if item.description and item.description != item.item_name %}<div class="muted">{{ item.description | striptags | truncate(90) }}</div>{% endif %}</td>
+<td>{{ item.gst_hsn_code or "" }}</td><td class="r">{{ item.get_formatted("qty") }} {{ item.uom }}</td>
+<td class="r">{{ item.get_formatted("rate", doc) }}</td><td class="r">{{ item.get_formatted("amount", doc) }}</td></tr>
+{%- endfor %}
+</table>
+<table style="margin-top:12px"><tr>
+<td style="width:52%;vertical-align:top;padding-right:16px">
+  {% if doc.in_words %}<div class="mlabel">Amount in words</div><div style="margin-bottom:10px">{{ doc.in_words }}</div>{% endif %}
+  __BANK__
+</td>
+<td style="vertical-align:top"><table class="tot">
+  <tr><td>Subtotal</td><td class="r">{{ doc.get_formatted("net_total") }}</td></tr>
+  {%- if doc.discount_amount %}<tr><td>Discount</td><td class="r">- {{ doc.get_formatted("discount_amount") }}</td></tr>{% endif %}
+  {%- for t in doc.taxes %}{% if t.tax_amount %}<tr><td>{{ t.description or t.account_head }}</td><td class="r">{{ t.get_formatted("tax_amount", doc) }}</td></tr>{% endif %}{% endfor %}
+  {%- if doc.rounding_adjustment %}<tr><td>Rounding</td><td class="r">{{ doc.get_formatted("rounding_adjustment") }}</td></tr>{% endif %}
+  <tr class="grand"><td>Total</td><td class="r">{{ doc.get_formatted("rounded_total") if doc.rounded_total else doc.get_formatted("grand_total") }}</td></tr>
+  {%- if doc.doctype == "Sales Invoice" and doc.outstanding_amount and doc.docstatus == 1 and not doc.is_return %}
+  <tr><td class="muted">Due</td><td class="r muted">{{ doc.get_formatted("outstanding_amount") }}</td></tr>{% endif %}
+</table></td></tr></table>
+<table style="margin-top:28px"><tr>
+<td class="muted" style="vertical-align:bottom;width:60%">__FOOTER__ __TERMS__</td>
+<td class="r" style="vertical-align:bottom"><div class="muted">For <b>{{ doc.company }}</b></div>__SIGNATURE__<div style="border-top:1px solid #999;display:inline-block;padding-top:3px" class="muted">Authorised signatory</div></td>
+</tr></table>
+</div>

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Munim</title>
+<style>
+:root{--bg:#fffdf6;--ink:#1b1b1b;--muted:#6b6255;--line:#1b1b1b;--card:#fff8e7;--green:#25d366;--green-d:#128c7e;--red:#c0392b;--gold:#ffd23f;--bar:#ff9933}
+:root[data-theme="dark"]{--bg:#141b17;--ink:#f3ead2;--muted:#b9b09a;--line:#000;--card:#1d2621;--bar:#e07b12}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141b17;--ink:#f3ead2;--muted:#b9b09a;--line:#000;--card:#1d2621;--bar:#e07b12}}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:12px}
+.card{background:var(--card);border:2px solid var(--line);box-shadow:4px 4px 0 var(--line);padding:14px 16px;max-width:560px}
+.head{display:flex;align-items:center;gap:8px;font:700 12px/1 ui-monospace,monospace;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.dot{width:10px;height:10px;background:var(--green);box-shadow:2px 2px 0 var(--line)}
+pre{white-space:pre-wrap;font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0}
+b{font-weight:700}
+.row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+button{font:700 13px/1 system-ui,sans-serif;padding:10px 14px;border:2px solid var(--line);box-shadow:3px 3px 0 var(--line);cursor:pointer;background:var(--green);color:#06221a}
+button.ghost{background:transparent;color:var(--ink)}
+button:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--line)}
+button:disabled{opacity:.55;cursor:default}
+.ok{color:var(--green-d);font-weight:700}.err{color:var(--red);font-weight:700}
+table{border-collapse:collapse;width:100%;margin-top:6px}
+td,th{padding:5px 6px;border-bottom:1px solid #0002;text-align:left;vertical-align:top}
+td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:4px 0 8px}
+.kv span:nth-child(odd){color:var(--muted)}
+.bar{height:8px;background:var(--bar);border:1px solid var(--line);margin-top:3px}
+h4{margin:12px 0 2px;font-size:13px}
+.muted{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="card" id="root"><div class="head"><i class="dot"></i>AI Munim</div><p class="muted">Loading…</p></div>
+<script>
+(() => {
+  const root = document.getElementById("root");
+  const sky = window.openai;            // ChatGPT Apps SDK host
+  let nextId = 1;
+  const waiting = new Map();
+
+  // ---- MCP Apps host bridge (JSON-RPC over postMessage) ----
+  function send(msg) { window.parent.postMessage(msg, "*"); }
+  function request(method, params) {
+    const id = nextId++;
+    send({ jsonrpc: "2.0", id, method, params });
+    return new Promise((resolve, reject) => waiting.set(id, { resolve, reject }));
+  }
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    if (msg.id !== undefined && waiting.has(msg.id)) {
+      const w = waiting.get(msg.id); waiting.delete(msg.id);
+      msg.error ? w.reject(msg.error) : w.resolve(msg.result);
+      return;
+    }
+    if (msg.method === "ui/notifications/tool-result") render(fromResult(msg.params));
+    if (msg.method === "ui/notifications/host-context-changed" && msg.params && msg.params.theme) theme(msg.params.theme);
+  });
+  function theme(t) { if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; }
+  function fromResult(r) {
+    if (!r) return null;
+    if (r.structuredContent) return r.structuredContent;
+    try { return JSON.parse((r.content || [])[0].text); } catch (e) { return { error: "No data" }; }
+  }
+  async function callTool(name, args) {
+    if (sky && sky.callTool) return fromResult(await sky.callTool(name, args)) || {};
+    return fromResult(await request("tools/call", { name, arguments: args }));
+  }
+  function resize() {
+    if (!sky) send({ jsonrpc: "2.0", method: "ui/notifications/size-changed",
+                     params: { width: document.body.scrollWidth, height: document.body.scrollHeight } });
+  }
+  new ResizeObserver(resize).observe(document.body);
+
+  // ---- rendering ----
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const wa = (s) => esc(s).replace(/\*([^*\n]+)\*/g, "<b>$1</b>").replace(/_([^_\n]+)_/g, "<i>$1</i>");
+  const label = (k) => k.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+  const rupees = (v) => typeof v === "string" && v.startsWith("₹") ? Number(v.replace(/[₹,]/g, "")) : null;
+  const head = (title) => `<div class="head"><i class="dot"></i>${esc(title)}</div>`;
+
+  function table(rows) {
+    if (!rows.length) return "";
+    const cols = Object.keys(rows[0]);
+    const money = cols.find((c) => rupees(rows[0][c]) !== null);
+    const max = money ? Math.max(...rows.map((r) => rupees(r[money]) || 0), 1) : 0;
+    return `<table><tr>${cols.map((c) => `<th>${esc(label(c))}</th>`).join("")}</tr>` + rows.map((r) =>
+      `<tr>${cols.map((c) => {
+        const v = r[c], m = rupees(v);
+        const bar = c === money && max ? `<div class="bar" style="width:${Math.max(4, (m / max) * 100)}%"></div>` : "";
+        return `<td class="${m !== null || typeof v === "number" ? "n" : ""}">${esc(v)}${bar}</td>`;
+      }).join("")}</tr>`).join("") + "</table>";
+  }
+
+  function render(data) {
+    if (!data) return;
+    if (data.preview_sent_to_user) return preview(data);
+    if (data.report) return report(data);
+    if (data.done) return done(data);
+    if (data.pdf_url) return done({ done: [`*${data.doctype} ${data.name}*`], documents: [{ doc: data.name, pdf_url: data.pdf_url }] });
+    if (data.error) { root.innerHTML = head("AI Munim") + `<p class="err">${esc(data.error)}</p>`; return; }
+    root.innerHTML = head("AI Munim") + `<pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
+  }
+
+  function preview(data) {
+    root.innerHTML = head("Preview · v" + data.version) + `<pre>${wa(data.preview_sent_to_user)}</pre>` +
+      (data.hsn_missing ? `<p class="err">HSN needed: ${esc(data.hsn_missing.join(", "))}</p>` : "") +
+      `<div class="row"><button id="yes">✅ Confirm</button><button class="ghost" id="no">❌ Cancel</button></div><p class="muted" id="msg"></p>`;
+    const msg = document.getElementById("msg");
+    const lock = () => root.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    document.getElementById("yes").onclick = async () => {
+      lock(); msg.textContent = "Making it in your books…";
+      try { const r = await callTool("confirm_preview", { draft_id: data.draft_id, version: data.version }); r.error ? (msg.innerHTML = `<span class="err">${esc(r.error)}</span>`) : done(r); }
+      catch (e) { msg.innerHTML = `<span class="err">Could not confirm — ask in the chat.</span>`; }
+    };
+    document.getElementById("no").onclick = async () => {
+      lock();
+      try { await callTool("cancel_draft", {}); msg.textContent = "Cancelled. Nothing was written."; }
+      catch (e) { msg.textContent = "Could not cancel — say 'cancel' in the chat."; }
+    };
+  }
+
+  async function openLink(url) {
+    try { if (sky && sky.openExternal) return sky.openExternal({ href: url }); await request("ui/open-link", { url }); }
+    catch (e) { window.open(url, "_blank", "noopener"); }
+  }
+
+  function done(data) {
+    const pdfs = (data.documents || []).filter((d) => d.pdf_url);
+    root.innerHTML = head("Done") + `<p class="ok">✓ In your books</p>` +
+      (data.done || []).map((t) => `<pre>${wa(t)}</pre>`).join("<br>") +
+      (pdfs.length ? `<div class="row">${pdfs.map((d, i) => `<button data-i="${i}">📄 ${esc(d.doc)} PDF</button>`).join("")}</div>` : "") +
+      (data.note ? `<p class="muted">${esc(data.note)}</p>` : "");
+    root.querySelectorAll("button[data-i]").forEach((b) => (b.onclick = () => openLink(pdfs[Number(b.dataset.i)].pdf_url)));
+  }
+
+  function report(data) {
+    const flat = [], lists = [];
+    for (const [k, v] of Object.entries(data)) {
+      if (k === "report") continue;
+      if (Array.isArray(v)) lists.push([k, v]);
+      else if (v && typeof v === "object") lists.push([k, Object.entries(v).map(([a, b]) => ({ [k === "by_age" ? "age" : "item"]: label(a), amount: b }))]);
+      else flat.push([k, v]);
+    }
+    root.innerHTML = head(label(data.report)) +
+      `<div class="kv">${flat.map(([k, v]) => `<span>${esc(label(k))}</span><b>${esc(v)}</b>`).join("")}</div>` +
+      lists.map(([k, rows]) => rows.length ? `<h4>${esc(label(k))}</h4>${table(rows)}` : "").join("");
+  }
+
+  // ---- start ----
+  if (sky) {
+    theme(sky.theme);
+    render(sky.toolOutput);
+    window.addEventListener("openai:set_globals", () => { theme(sky.theme); render(sky.toolOutput); });
+  } else {
+    request("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "AI Munim", version: "1" },
+                               appCapabilities: { availableDisplayModes: ["inline"] } })
+      .then((r) => { theme(r && r.hostContext && r.hostContext.theme);
+                     send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }); resize(); })
+      .catch(() => send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }));
+  }
+})();
+</script>
+</body>
+</html>
