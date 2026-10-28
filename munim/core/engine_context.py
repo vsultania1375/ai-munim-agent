@@ -16,7 +16,8 @@ class ContextMixin:
     def _state_block(self, state: ConversationState) -> str:
         now = self.clock()
         lines = [f"now: {now_line(now)}", f"today: {getattr(self.erp, 'today', today_ist()).isoformat()}",
-                 f"user_style: {styles.hint(state.style)}"]
+                 f"user_style: {styles.hint(state.style)}",
+                 f"reply_language: {reply_language(state)}"]
         facts = self.store.memory_list(self.tenant)
         if facts:  # what the owner asked us to keep in mind; ERP data and tool results still win
             lines.append("business_memory: " + " | ".join(
@@ -153,3 +154,10 @@ class ContextMixin:
         if kind == "question":
             return f"our question: \"{meta.get('question', rec.text)[:200]}\""
         return f"our earlier message ({stamp(rec.at)}): \"{rec.text[:200]}\""
+
+
+def reply_language(state: ConversationState) -> str:
+    """What the person writes in, from code (their last messages), so the reply never drifts into another language."""
+    if state.style.get("deva", 0) >= 0.5:
+        return "Hindi in Devanagari"
+    return "Hinglish (Hindi in Roman script)" if state.lang == "hi" else "English"

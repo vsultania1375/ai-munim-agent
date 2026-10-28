@@ -16,7 +16,9 @@ _HINGLISH = {
     "mujhe", "mera", "meri", "apna", "kaise", "abhi", "kal", "ko", "ka", "ki", "ke", "mein", "hoga", "diya",
     "gaya", "raha", "rahe", "thik", "theek", "batao", "bata", "kitni", "sab", "saare", "liye", "wahi", "accha",
     "achha", "namaste", "bhaiya", "dukaan", "maal", "udhaar", "baaki", "hisaab", "paisa", "paise", "kab",
-}
+    "ek", "likh", "likho", "jo", "se", "pe", "hoon", "ho", "tu", "tum", "aap", "aapka", "sakta", "sakte", "dena",
+    "lena", "wapas", "bol", "bolo", "kaun", "kahan", "kyun", "kyon", "chhupa", "dikhana", "mat", "toh", "bhi",
+}  # not "do", "me", "to": English words too
 _DEVANAGARI = re.compile(r"[ऀ-ॿ]")
 
 
