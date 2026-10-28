@@ -71,7 +71,7 @@ def test_inbound_outbound_and_status_are_all_logged(app):
     log = WALog(root / ".run/v2/walog.db")
     inbound = log.get("wamid.IN1")
     assert inbound.direction == "in" and inbound.meta["referral"]["headline"] == "Try AI Munim"
-    out = wait_for(lambda: log.get("wamid.OUT1"))
+    out = wait_for(lambda: (row := log.get("wamid.OUT1")) and row.status == "sent" and row)  # logged, then marked sent
     assert out.direction == "out" and out.chat == TESTER and out.status == "sent"
     tenant = TenantStore(root / ".run/v2/tenants.db").get(TESTER)
     assert tenant.data["referral"]["source_type"] == "ad" and tenant.data["profile_name"] == "Amit"
