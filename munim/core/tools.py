@@ -998,23 +998,26 @@ class ToolExecutor:
         bills = [d for d in docs if d["doctype"] == "Sales Invoice"] or [d for d in docs if d["doctype"] == "Sales Order"]
         bills = bills[:USUAL_BILLS]  # newest first; invoices only, so order -> challan -> bill isn't counted three times
         seen: dict[str, dict[str, Any]] = {}
+        counted = []
         for doc in bills:
             try:
                 lines = (await self.erp.document_lines(doc["doctype"], doc["name"])).lines
             except ConversionError:
                 continue
+            counted.append(doc)
             for line in lines:
                 row = seen.setdefault(line.item_code, {"qtys": [], "last_rate": str(line.rate), "last_date": doc.get("date")})
                 row["qtys"].append(line.qty)
         if not seen:
             return {"customer": customer.name, "bills_seen": 0, "usual": [], "note": "no final bills yet"}
+        bills = counted
         need = 1 if len(bills) < 3 else 2  # with a few bills, anything bought twice is a habit
         usual = []
         for code, row in sorted(seen.items(), key=lambda kv: -len(kv[1]["qtys"])):
             if len(row["qtys"]) < need:
                 continue
             item = await self.erp.get_item(code)
-            usual.append({"item_code": code, "item_name": item.name if item else code, "usual_qty": str(median(row["qtys"])),
+            usual.append({"item_code": code, "item_name": item.name if item else code, "usual_qty": format(Decimal(median(row["qtys"])).normalize(), "f"),
                           "in_bills": f"{len(row['qtys'])} of {len(bills)}", "last_rate": row["last_rate"], "last_date": row["last_date"]})
         dates = sorted({date.fromisoformat(str(d["date"])[:10]) for d in bills if d.get("date")})
         gap = round((dates[-1] - dates[0]).days / (len(dates) - 1)) if len(dates) > 1 else None

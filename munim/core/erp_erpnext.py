@@ -525,7 +525,7 @@ class ERPNextPort:
                         "name": row.get("name"),
                         "date": str(row.get("transaction_date") or row.get("posting_date") or ""),
                         "total": str(row.get("grand_total") or ""),
-                        "status": "draft" if row.get("docstatus") == 0 else "submitted",
+                        "status": {0: "draft", 1: "submitted"}.get(row.get("docstatus"), "cancelled"),
                         "erp_status": row.get("status") or "",  # e.g. To Deliver and Bill, To Bill, Completed, Unpaid
                     }
                 )
