@@ -16,7 +16,7 @@ WhatsApp ──► Meta Cloud API ──► Caddy (HTTPS) ──► bot (FastAPI
        1. button fast path: approve:<draft>:<version> / edit / cancel / option taps
        2. ConversationState: one JSON object per (site, sender)
        3. turn hint from Jev (optional, advisory)
-       4. Claude with a closed tool set (core/tools.py)
+       4. Claude with a closed tool set (core/tool_specs.py; executed by core/tools*.py)
        5. previews computed in code; Approve (one tap) → ERPNext document, submitted for the owner (draft for staff) + PDF
 ```
 
@@ -69,7 +69,12 @@ user's own messages (sticky; short messages like "ok" keep the current language)
 
 ## Onboarding (core/onboarding.py)
 
-welcome [Start | Demo] → identity (GSTIN text, a photo/PDF of a GST certificate, bill or
+A new number that just says hi gets [Own setup | Demo]. A real request typed or spoken without choosing is
+answered by the demo shop at once (with the own-setup button on top). Demo visitors get `MUNIM_DEMO_LIMIT`
+messages (default 25; button taps don't count), a heads-up with 3 left, then the setup button. Own setup only
+when asked for (button, "setup", a GSTIN, or the website's set-up message), straight to the GST step:
+
+identity (GSTIN text, a photo/PDF of a GST certificate, bill or
 visiting card read by Claude, or "no GST" → name + city) → confirm card → business type →
 own ERPNext site from the pool (setup wizard + GST templates over REST, ~30 s) → old data
 [Excel/CSV | Tally/Vyapar help | Later] → preview counts [Import | Skip] → live.
@@ -84,8 +89,10 @@ own ERPNext site from the pool (setup wizard + GST templates over REST, ~30 s) �
 
 ## Web ERP (core/web_access.py)
 
-`https://<site>.<domain>` (and `demo.<domain>`) is served by Caddy with on-demand TLS;
-`/caddy/ask` approves only hosts of claimed sites. Owners type *ERP login* (also sent when
+Each business's ERP is at `https://<its-name>.<domain>` (a label made from the business name, unique, kept
+once given; the older `<site>.<domain>` still works) and the demo at `demo.<domain>`. Sites keep their pool
+names: Caddy asks the bot (`forward_auth` → `/caddy/site`) which ERPNext site serves a host and sets `Host`,
+so a new business needs no Caddy reload. On-demand TLS: `/caddy/ask` approves only hosts we serve. Owners type *ERP login* (also sent when
 onboarding finishes) to get a login for their own site (10-digit mobile number); *password
 reset* rotates it. Demo-mode users get no login to the shared site.
 
@@ -135,6 +142,11 @@ resolved in code (financial year from 1 April). Read-only.
   GSTIN — India Compliance rule) and the original attached as a private file.
 - Expenses → `propose_expense` against a checked expense head → Journal Entry from Cash or Bank.
 - New suppliers on Approve. Live-verified: PI 8,307.14 (CGST/SGST 794.82 input), JE 500.
+- Paying a supplier → `propose_supplier_payment`: a Payment Entry (Pay) split over their open purchase bills,
+  oldest first, in code. Goods sent back → `propose_purchase_return`: a Debit Note via ERPNext's
+  `make_debit_note`, part returns checked against what is left, today's input-GST template. Live-verified on
+  ERPNext (1 bag back: debit 487.04 with GST; owed 8,307.14 → 7,820.10), then cancelled.
+- Stock: per-warehouse stock when ERPNext tracks it; otherwise bought minus sold from final bills, labelled.
 
 ## Corrections
 
@@ -229,5 +241,14 @@ does the conversation, so there is no model call on our side. Each call is writt
 ## Evaluation
 
 `tests/` runs every flow with a scripted fake LLM (free, every change).
+`scripts/load_test.py` measures the pipeline and ERPNext without model calls (numbers in the README).
 `scripts/smoke.py` replays real conversations against the live model and prints token
 cost; run it only when the prompt or model changes.
+
+## Cost and secrets
+
+- Model spend is capped per day for the whole server (`MUNIM_DAILY_BUDGET_USD`), per business
+  (`MUNIM_TENANT_DAILY_USD`) and for the shared demo shop (`MUNIM_DEMO_DAILY_USD`); the ledger records the business.
+- Stored secrets (ERP sign-in passwords the bot uses for one-tap sign-in, Razorpay secrets) are sealed with the
+  newest key in `MUNIM_DATA_KEYS` (`core/secretbox.py`); any listed key still reads. Rotate: add a key in front,
+  restart (everything is re-sealed at start), then drop the old key.

@@ -42,9 +42,9 @@ Payment Entry against that bill → "Gupta ji ne ₹11,092 (UPI) pay kiye, bill 
 | | |
 |---|---|
 | **Sales chain** | Quotation → order → challan → bill, each from the previous one; several at once are queued. Returns (credit notes), cancel, correct (amend), discounts. |
-| **Purchases & expenses** | Forward a supplier bill: purchase invoice with input GST, the bill attached. "500 ka petrol cash me" → expense entry. |
+| **Purchases & expenses** | Forward a supplier bill: purchase invoice with input GST, the bill attached. Pay a supplier (split over their open bills, oldest first), send goods back (debit note). "500 ka petrol cash me" → expense entry. |
 | **GST (India Compliance)** | In-state CGST+SGST, out-of-state IGST, unregistered parties, HSN checks. |
-| **Business questions** | Sales, collections, dues, profit, top items — periods in IST, Indian financial year. |
+| **Business questions** | Sales, collections, dues, profit, top items, stock (bought minus sold from bills when no warehouse stock is kept) — periods in IST, Indian financial year. |
 | **Business memory** | "Gupta ji ka usual" is worked out by code from their past bills (items, usual qty, how often). Standing facts the owner gives ("30 din me paisa dete hain") are kept per business. |
 | **Paper to books** | Photo of a bahi page → entries copied, netted per party by code → old dues booked with the photo attached. Tally/Vyapar/Khatabook sheets import too. |
 | **Voice** | Hindi/Hinglish voice notes in (Whisper) and voice replies out (Piper) — both on our own server. |
@@ -52,7 +52,8 @@ Payment Entry against that bill → "Gupta ji ne ₹11,092 (UPI) pay kiye, bill 
 | **Online payments** | Each business connects its own Razorpay; the money goes to its bank, never through us. |
 | **Team** | Staff numbers make drafts; the owner finalises with one tap. ERP events (a bill made on the web desk) reach the owner on WhatsApp. |
 | **Talks like you** | Replies in your language and script, and your style: no emojis if you use none, short if you write short, light if you joke. |
-| **Web ERP, no password** | Verify with WhatsApp (QR or tap) and the full ERPNext desk opens, signed in. |
+| **Web ERP, no password** | Verify with WhatsApp (QR or tap) and the full ERPNext desk opens, signed in, at the shop's own address (`sharma-hardware.<domain>`). |
+| **Try before setup** | A new number chooses its own setup or the demo shop; a question typed straight away is answered by the demo. 25 demo messages, then setup with their GST. |
 | **Your own Claude / ChatGPT** | `https://aimunim.duckdns.org/mcp` — an MCP server with OAuth 2.1 (PKCE, WhatsApp verification). Reports, previews with confirm cards, PDFs. |
 
 ## Online payments (Razorpay), per business
@@ -79,27 +80,42 @@ WhatsApp ─ Meta Cloud API ─▶ Caddy (TLS) ─▶ bot (FastAPI, one containe
 Oracle Cloud Always Free · Ampere A1 · 2 OCPU / 12 GB · Mumbai
 ```
 
-Measured on the live VM (5 business sites, idle): 2.7 GB of 12 GB RAM in use (MariaDB ~1 GB, ERPNext
-workers ~0.8 GB, bot ~0.1 GB); a business site is ~62 MB of database; Claude cost about **$0.001 per
-model call** (Haiku, cached system prompt). Not load-tested yet — that is the first item below.
+### Measured on the live VM
+
+Idle with 5 business sites: 2.7 GB of 12 GB RAM in use (MariaDB ~1 GB, ERPNext workers ~0.8 GB, bot ~0.1 GB,
+plus ~0.4 GB for the speech models); a business site is ~62 MB of database; Claude costs about **$0.001 per
+model call** (Haiku, cached system prompt).
+
+Load test (`scripts/load_test.py`, no model calls, run on the VM next to the live bot):
+
+| What | Result |
+|---|---|
+| Bot pipeline: 100 chats × 3 bill requests at once (signed webhooks → per-chat queue → tools on the demo ERP → replies) | 300/300 answered, **~28 turns/s**, p50 2.6 s / p95 3.5 s — of which 1.5 s is the deliberate burst window |
+| ERPNext, the reads of a turn (customer/item lists cached by the bot, dues read live) | ~95/s from 4 parallel callers on; p95 56 ms at 4, 330 ms at 16 |
+| ERPNext PDF printing | ~2/s one at a time (0.47 s each), ~6/s with 4 in parallel |
+
+What that means: the bot itself is not the limit, and one free VM covers far more traffic than a few hundred
+shops make (a busy shop sends tens to a few hundred messages a day). The real ceilings, in order: the model's
+response time (2–4 s, outside our server), PDF printing CPU, then ERPNext workers. Not measured yet: many
+businesses writing documents at the same moment.
 
 ## Scaling plan
 
 What breaks first, and what we do about it. Every stage keeps the same rules: per-business site,
 code-computed money, approval before writes.
 
-**Stage 0 — now (one free VM, tens of businesses).** Single bot container, SQLite for chat state and
-audit, one ERPNext bench. Pre-created empty sites (hourly top-up) make onboarding ~30 s. Nightly
-encrypted backups to object storage, 5-minute health checks with WhatsApp alerts, a daily LLM spend cap.
+**Stage 0 — now (one free VM).** Single bot container, SQLite for chat state and audit, one ERPNext bench.
+Pre-created empty sites (hourly top-up) make onboarding ~30 s. Nightly encrypted backups to object storage,
+5-minute health checks with WhatsApp alerts. Model spend capped per day for the server, per business and for
+the demo shop; demo visitors limited to 25 messages.
 
 **Stage 1 — ~100 businesses / a few thousand messages a day.**
-- **Load test first** (scripted WhatsApp webhooks + fake LLM) to find the real limit; CPU for PDF printing
-  and speech is the expected first wall, not memory.
+- **Load test writes too** (many businesses creating documents at once); reads and the pipeline are measured above.
 - **Durable queue**: the per-chat in-process queues move to Redis Streams (Redis already runs for
   ERPNext), partitioned by sender so each chat stays in order. The bot becomes stateless → 2+ replicas.
 - **Postgres** for conversation state, audit, OAuth and payment accounts (SQLite stays for local dev).
 - **Heavy work off the request path**: PDF rendering, Whisper and Piper as separate worker containers.
-- **Spend and abuse caps per business**, not only global; per-business usage on the portal.
+- Per-business usage on the portal (the caps themselves are in place).
 
 **Stage 2 — hundreds to thousands of businesses.**
 - **Many ERPNext benches**, each holding N sites, plus a site directory (business → bench) that the bot,
@@ -116,16 +132,21 @@ encrypted backups to object storage, 5-minute health checks with WhatsApp alerts
 - Byte-stable system prompt with prompt caching; Haiku by default; small closed tool set.
 - No model call for buttons (Approve/Edit/Cancel, owner decisions) — those are deterministic.
 - Uploaded documents are read once and cached by content hash; "the usual" and all reports are SQL/code.
-- Next: short-TTL cache of item/customer masters per site, batch ERP reads, and a cheaper path for very
-  simple turns (balance lookups) measured against the current one before switching.
+- Customer and item lists are cached per site for a short time; voice models load at start, the "I heard"
+  echo goes out at once and text replies never wait for the voice reply.
+- Next: batch ERP reads, a one-hour prompt cache for quiet hours, and a cheaper path for very simple turns
+  (balance lookups), each measured against the current one before switching.
 
 ## Engineering
 
-- **159 tests** with a scripted fake LLM (no API cost) cover the agent flows, GST, money, chain, payments,
+- **171 tests** with a scripted fake LLM (no API cost) cover the agent flows, GST, money, chain, payments,
   OAuth, branding, memory and WhatsApp signals; CI runs ruff + pytest on every push. Real-model checks
   (`scripts/smoke.py`) run only when prompts change.
-- Security: Meta and Razorpay webhooks HMAC-verified; per-site ERP webhook tokens; OAuth tokens and
-  Razorpay secrets never stored in plain text; secrets only in server env files; no third-party telemetry.
+- Security: Meta and Razorpay webhooks HMAC-verified; per-site ERP webhook tokens; OAuth tokens hashed; ERP
+  sign-in passwords and Razorpay secrets encrypted with rotatable keys (`MUNIM_DATA_KEYS`, re-sealed at start);
+  secrets only in server env files; no third-party telemetry.
+- Code layout: the agent's tools are split by concern (`tool_specs`, `tools_purchase`, `tools_corrections`,
+  `tools_business`) and so is the turn engine (`engine_approve`, `engine_media`, `engine_context`).
 - Rules for contributors (human or AI): [CLAUDE.md](CLAUDE.md). Design notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Run locally (demo ERP, no ERPNext needed)
