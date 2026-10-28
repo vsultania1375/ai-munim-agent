@@ -8,7 +8,6 @@ to its bank. We never hold funds.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -21,7 +20,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import httpx
-from cryptography.fernet import Fernet, InvalidToken
+
+from munim.core.secretbox import SecretBox
 
 API = "https://api.razorpay.com/v1"
 POLL_DAYS = 7  # open links older than this are not checked any more (the webhook still records them)
@@ -59,13 +59,12 @@ class PaidLink:
 
 
 class PaymentAccounts:
-    """One Razorpay account per ERP site; secrets encrypted at rest with a key derived from the server secret."""
+    """One Razorpay account per ERP site; key secret and webhook secret encrypted at rest (core/secretbox.py)."""
 
-    def __init__(self, path: Path | str, server_secret: str) -> None:
+    def __init__(self, path: Path | str, box: SecretBox | str) -> None:
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        key = hashlib.sha256(b"munim-razorpay-v1:" + server_secret.encode()).digest()
-        self._fernet = Fernet(base64.urlsafe_b64encode(key))
+        self.box = box if isinstance(box, SecretBox) else SecretBox([box])
         self._lock = threading.Lock()
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.execute("CREATE TABLE IF NOT EXISTS account (site TEXT PRIMARY KEY, key_id TEXT, secret TEXT, hook TEXT,"
@@ -77,8 +76,7 @@ class PaymentAccounts:
         hook = secrets.token_urlsafe(24)
         with self._lock:
             self._db.execute("INSERT OR REPLACE INTO account VALUES (?, ?, ?, ?, 1, ?, ?)",
-                             (site, key_id, self._fernet.encrypt(key_secret.encode()).decode(),
-                              self._fernet.encrypt(hook.encode()).decode(), by, time.time()))
+                             (site, key_id, self.box.seal(key_secret), self.box.seal(hook), by, time.time()))
             self._db.commit()
         account = self.get(site)
         assert account is not None
@@ -90,9 +88,8 @@ class PaymentAccounts:
                                    (site,)).fetchone()
         if row is None:
             return None
-        try:
-            secret, hook = (self._fernet.decrypt(v.encode()).decode() for v in (row[2], row[3]))
-        except InvalidToken:  # the server secret changed: the owner connects again
+        secret, hook = self.box.open(row[2]), self.box.open(row[3])
+        if secret is None or hook is None:  # its key was dropped: the owner connects again
             return None
         return Account(row[0], row[1], secret, hook, bool(row[4]), row[5], row[6])
 
@@ -106,6 +103,18 @@ class PaymentAccounts:
         with self._lock:
             self._db.execute("DELETE FROM account WHERE site=?", (site,))
             self._db.commit()
+
+    def reseal_all(self) -> int:
+        """Re-encrypt every stored secret with the newest key (key rotation). Returns rows updated."""
+        done = 0
+        with self._lock:
+            for site, secret, hook in self._db.execute("SELECT site, secret, hook FROM account").fetchall():
+                new_secret, new_hook = self.box.reseal(secret), self.box.reseal(hook)
+                if new_secret and new_hook:
+                    self._db.execute("UPDATE account SET secret=?, hook=? WHERE site=?", (new_secret, new_hook, site))
+                    done += 1
+            self._db.commit()
+        return done
 
     def sites(self) -> list[str]:
         with self._lock:

@@ -39,6 +39,7 @@ from munim.core.portal import PortalStore, parse_command, wa_link
 from munim.core.portal_web import mount_portal
 from munim.core.provisioning import Provisioner, load_pool
 from munim.core.resolver import JevTurnResolver, NullResolver
+from munim.core.secretbox import SecretBox
 from munim.core.sso import SSOStore, erp_session, mount_sso
 from munim.core.state import StateStore
 from munim.core.tenants import DEMO_SITE, TenantStore
@@ -162,6 +163,7 @@ def create_app(env_file: Path | None = None) -> FastAPI:
     pool_dir = Path(os.environ.get("MUNIM_V2_POOL_DIR", "/app/pool"))
     pool = load_pool(pool_dir)
     hook_secret = os.environ.get("MUNIM_PORTAL_SECRET") or app_secret
+    box = SecretBox.from_env(fallback=hook_secret)  # stored secrets: ERP sign-in passwords, Razorpay keys
     provisioner = (Provisioner(erp_url, pool, hook_secret=hook_secret,
                                bot_url=os.environ.get("MUNIM_INTERNAL_URL", "http://aimunim-bot-1:8800"))
                    if erp_url else None)  # shares `pool`; refreshed on demand
@@ -177,7 +179,7 @@ def create_app(env_file: Path | None = None) -> FastAPI:
     portal = PortalStore(Path(".run/v2/portal.db"), os.environ.get("MUNIM_PORTAL_SECRET") or app_secret)
     # each business connects its own Razorpay on the portal; keys stored encrypted per site
     pay_links = RazorpayLinks(Path(".run/v2/razorpay.db"))
-    payments = PaymentService(PaymentAccounts(Path(".run/v2/payments.db"), os.environ.get("MUNIM_PORTAL_SECRET") or app_secret),
+    payments = PaymentService(PaymentAccounts(Path(".run/v2/payments.db"), box),
                               pay_links, base_domain)
     sso = SSOStore(Path(".run/v2/sso.db"))
     walog = WALog(Path(".run/v2/walog.db"))
@@ -214,19 +216,32 @@ def create_app(env_file: Path | None = None) -> FastAPI:
     def roles_for(tenant) -> tuple[str, ...]:
         return STAFF_ROLES if tenant.role == "staff" else OWNER_ROLES
 
+    def erp_password(tenant) -> str | None:
+        """The bot-held ERP password for one-tap sign-in, kept encrypted (older plain ones are sealed on first use)."""
+        plain = tenant.data.pop("erp_pw", None)
+        if plain:
+            tenant.data["erp_pw_sealed"] = box.seal(plain)
+            tenants.save(tenant)
+            return plain
+        return box.open(tenant.data.get("erp_pw_sealed"))
+
+    def keep_erp_password(tenant, password: str) -> None:
+        tenant.data.pop("erp_pw", None)
+        tenant.data["erp_pw_sealed"] = box.seal(password)
+        tenants.save(tenant)
+
     async def reset_sso_password(tenant, site: str) -> str:
         password = secrets.token_urlsafe(24)  # never shown; the bot signs in on the person's behalf
         await ensure_user(provisioner.api(site), phone=tenant.phone, roles=roles_for(tenant), password=password,
                           name=tenant.data.get("owner_name") or profile_names.get(tenant.phone))
-        tenant.data["erp_pw"] = password
-        tenants.save(tenant)
+        keep_erp_password(tenant, password)
         return password
 
     async def erp_link(tenant) -> str | None:
         site = tenant.erp_site
         if not site or provisioner is None or site not in pool:
             return None
-        if not tenant.data.get("erp_pw"):
+        if not erp_password(tenant):
             await reset_sso_password(tenant, site)
         return f"https://{web_host(site, base_domain, DEMO_SITE)}/munim-sso?t={sso.mint(tenant.phone, site)}"
 
@@ -235,7 +250,7 @@ def create_app(env_file: Path | None = None) -> FastAPI:
         if tenant.erp_site != site or provisioner is None or site not in pool:
             return None
         user = user_email(phone)
-        cookies = await erp_session(erp_url, site, user, tenant.data.get("erp_pw") or "-")
+        cookies = await erp_session(erp_url, site, user, erp_password(tenant) or "-")
         if cookies is None:  # password changed in the ERP or never set: rotate and retry once
             cookies = await erp_session(erp_url, site, user, await reset_sso_password(tenant, site))
         return cookies
@@ -256,8 +271,7 @@ def create_app(env_file: Path | None = None) -> FastAPI:
         except Exception:
             log.exception("web login failed site=%s", site)
             return [Outbound("text", t("web.failed", lang))]
-        tenant.data["erp_pw"] = login.password  # keep one-tap sign-in working after a manual reset
-        tenants.save(tenant)
+        keep_erp_password(tenant, login.password)  # keep one-tap sign-in working after a manual reset
         return [Outbound("text", login_message(login, first_time=first_time, lang=lang))]
 
     async def to_inbound(batch: list[IncomingMessage]) -> Inbound:
@@ -651,6 +665,24 @@ def create_app(env_file: Path | None = None) -> FastAPI:
         app.state.janitor = asyncio.create_task(loop())
 
     app.router.on_startup.append(media_janitor)
+
+    async def reseal_secrets() -> None:
+        """Key rotation: everything stored is re-encrypted with the newest data key at start."""
+        sealed = payments.accounts.reseal_all()
+        for person in tenants.everyone():
+            value = person.data.get("erp_pw_sealed")
+            plain = person.data.get("erp_pw")
+            if plain or value:
+                fresh = box.seal(plain) if plain else box.reseal(value)
+                if fresh:
+                    person.data.pop("erp_pw", None)
+                    person.data["erp_pw_sealed"] = fresh
+                    tenants.save(person)
+                    sealed += 1
+        if sealed:
+            log.info("re-sealed %d stored secrets with the newest key", sealed)
+
+    app.router.on_startup.append(reseal_secrets)
 
     async def warm_models() -> None:
         async def load() -> None:  # in the background: the first voice note shouldn't wait ~10 s for a model load

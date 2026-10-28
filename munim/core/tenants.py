@@ -71,7 +71,8 @@ class TenantStore:
                 return None  # nothing to move, or the new number already has its own account
             data = json.loads(row[0])
             data["phone"] = new
-            data.setdefault("data", {}).pop("erp_pw", None)  # the ERP login is per number; re-made on next sign-in
+            for key in ("erp_pw", "erp_pw_sealed"):  # the ERP login is per number; re-made on next sign-in
+                data.setdefault("data", {}).pop(key, None)
             data["data"]["previous_phone"] = old
             self._db.execute("INSERT INTO tenant VALUES (?, ?)", (new, json.dumps(data)))
             self._db.execute("DELETE FROM tenant WHERE phone=?", (old,))
@@ -92,6 +93,11 @@ class TenantStore:
                     self._db.commit()
                     return site
         return None
+
+    def everyone(self) -> list[Tenant]:
+        with self._lock:
+            rows = self._db.execute("SELECT body FROM tenant").fetchall()
+        return [Tenant(**json.loads(r[0])) for r in rows]
 
     def all_active(self) -> list[Tenant]:
         with self._lock:
