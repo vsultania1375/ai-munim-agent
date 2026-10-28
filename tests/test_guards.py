@@ -39,6 +39,32 @@ async def test_budget_blocks_after_cap(tmp_path: Path):
     assert inner.calls == 2 and ledger.spent_today() == pytest.approx(0.20)
 
 
+async def test_one_business_cannot_use_up_everyones_day(tmp_path: Path):
+    ledger = UsageLedger(tmp_path / "u.db")
+    inner = PricedLLM({"input_tokens": 1_000_000})  # $0.10 per call
+    server = BudgetedLLM(inner, ledger, daily_usd=5.0, model="claude-haiku-5-5")
+    busy, quiet = server.for_tenant("tenant-1", 0.15), server.for_tenant("tenant-2", 0.15)
+    await busy.run_turn(system="", messages=[], tools=[], execute=None)
+    await busy.for_feature("onboarding").run_turn(system="", messages=[], tools=[], execute=None)  # still this business
+    with pytest.raises(BudgetExceeded):
+        await busy.run_turn(system="", messages=[], tools=[], execute=None)
+    await quiet.run_turn(system="", messages=[], tools=[], execute=None)  # the others carry on
+    assert ledger.spent_today("tenant-1") == pytest.approx(0.20) and ledger.spent_today() == pytest.approx(0.30)
+
+
+def test_old_ledger_gets_the_business_column(tmp_path: Path):
+    import sqlite3
+
+    db = sqlite3.connect(tmp_path / "u.db")
+    db.execute("CREATE TABLE usage (day TEXT, at REAL, feature TEXT, usd REAL)")
+    db.execute("INSERT INTO usage VALUES ('2026-01-01', 0, 'agent', 1.0)")
+    db.commit()
+    db.close()
+    ledger = UsageLedger(tmp_path / "u.db")
+    ledger.record(0.5, "agent", "tenant-1")
+    assert ledger.spent_today("tenant-1") == pytest.approx(0.5)
+
+
 async def test_engine_answers_politely_when_budget_is_used(tmp_path: Path):
     ledger = UsageLedger(tmp_path / "u.db")
     ledger.record(5.0, "agent")

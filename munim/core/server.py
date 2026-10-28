@@ -170,6 +170,8 @@ def create_app(env_file: Path | None = None) -> FastAPI:
     nudge_template = os.environ.get("MUNIM_TEMPLATE_NUDGE", "")  # approved utility template, no parameters
     summary_hour = int(os.environ.get("MUNIM_SUMMARY_HOUR", "9"))
     demo_limit = int(os.environ.get("MUNIM_DEMO_LIMIT", "25"))  # messages a visitor can try on the demo shop
+    tenant_daily_usd = float(os.environ.get("MUNIM_TENANT_DAILY_USD", "0.5"))  # model spend per business per day
+    demo_daily_usd = float(os.environ.get("MUNIM_DEMO_DAILY_USD", "1"))  # the shared demo shop, all visitors together
     onboarding = Onboarding(
         tenants=tenants, provisioner=provisioner, llm=llm.for_feature("onboarding"), pool_dir=pool_dir,
         max_new_sites_per_day=int(os.environ.get("MUNIM_MAX_NEW_SITES_PER_DAY", "3")),
@@ -202,7 +204,8 @@ def create_app(env_file: Path | None = None) -> FastAPI:
                     _erp_client(erp_url, creds.api_key, creds.api_secret, site), company=company or "", label=""
                 )
             engines[site] = AgentEngine(
-                store=store, erp=erp, llm=llm, resolver=resolver, tenant=site,
+                store=store, erp=erp, llm=llm.for_tenant(site, demo_daily_usd if site == DEMO_SITE else tenant_daily_usd),
+                resolver=resolver, tenant=site,
                 welcome_key="welcome" if site == DEMO_SITE else "welcome_business",
                 transcriber=transcriber, walog=walog, speaker=speaker, payments=payments_tool,
                 brand=((lambda s=site: provisioner.brand_of(s)), (lambda b, d, s=site: provisioner.apply_brand(s, b, d)))
