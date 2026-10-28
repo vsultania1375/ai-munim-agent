@@ -16,7 +16,7 @@ from munim.core.automation import describe_erp_event, hook_token, summary_text, 
 from munim.core.engine import AgentEngine, Inbound
 from munim.core.erp import DemoERP
 from munim.core.state import StateStore
-from munim.core.tools import _next_date
+from munim.core.tools_common import _next_date
 from munim.payments.razorpay import RazorpayLinks
 from tests.test_agent import ScriptedLLM
 from tests.test_server_signals import TESTER, app, post, wait_for  # noqa: F401 - pytest fixture
