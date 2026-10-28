@@ -152,7 +152,7 @@ class AgentEngine:
             return [text(t("voice_on" if state.voice_replies else "voice_off", lang))]
         if msg.kind == "text" and (msg.text or "").strip().lower() in RESET_WORDS:
             self.store.reset(self.tenant, msg.sender)
-            state.__dict__.update(ConversationState(sender=msg.sender).__dict__)
+            state.__dict__.update(ConversationState(sender=state.sender).__dict__)
             return [text(t("reset_done", lang) + t(self.welcome_key, lang))]
         if msg.kind == "audio":
             return await self._voice(msg, state)
@@ -597,7 +597,10 @@ class AgentEngine:
         if self.brand:
             executor.brand_get = self.brand[0]
         if self.payments:
-            executor.payments = lambda action, sender=msg.sender: self.payments(action, sender)
+            executor.payments = lambda action, sender=state.sender: self.payments(action, sender)
+        executor.memory = (lambda: self.store.memory_list(self.tenant),
+                           lambda fact, about, sender=state.sender: self.store.memory_add(self.tenant, fact, about, sender),
+                           lambda memory_id: self.store.memory_forget(self.tenant, memory_id))
         signals = self._signals(msg, state)  # first: a reply to an old photo re-selects that document
         if self._speaks(msg, state):
             note = f"{note} {SPEAK_NOTE}" if note else SPEAK_NOTE
@@ -675,6 +678,10 @@ class AgentEngine:
         now = self.clock()
         lines = [f"now: {now_line(now)}", f"today: {getattr(self.erp, 'today', today_ist()).isoformat()}",
                  f"user_style: {styles.hint(state.style)}"]
+        facts = self.store.memory_list(self.tenant)
+        if facts:  # what the owner asked us to keep in mind; ERP data and tool results still win
+            lines.append("business_memory: " + " | ".join(
+                f"#{f['id']} {f['fact']}" + (f" (about {f['about']})" if f.get("about") else "") for f in facts))
         draft = state.draft
         if draft is None:
             lines.append("open_preview: none")

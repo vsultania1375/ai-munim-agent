@@ -12,6 +12,8 @@ from typing import Any
 
 MAX_TURNS = 12
 MAX_TURN_CHARS = 1200
+MEMORY_SHOWN = 30  # remembered facts the agent sees each turn
+MEMORY_KEPT = 100  # older ones drop off
 
 
 @dataclass
@@ -152,6 +154,9 @@ class StateStore:
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, sender TEXT, body TEXT, at REAL, done INTEGER DEFAULT 0)"
         )
+        self._db.execute(  # business memory: what the owner told us to keep in mind, per business
+            "CREATE TABLE IF NOT EXISTS memory (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT, fact TEXT, about TEXT, by TEXT, at REAL)"
+        )
         self._db.commit()
 
     def load(self, tenant: str, sender: str) -> ConversationState:
@@ -185,6 +190,30 @@ class StateStore:
         with self._lock:
             self._db.execute("INSERT OR REPLACE INTO alias VALUES (?, ?, ?, ?)", (tenant, kind, _alias_key(alias), target))
             self._db.commit()
+
+    def memory_list(self, tenant: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute("SELECT id, fact, about, at FROM memory WHERE tenant=? ORDER BY id DESC LIMIT ?",
+                                    (tenant, MEMORY_SHOWN)).fetchall()
+        return [{"id": r[0], "fact": r[1], "about": r[2], "at": r[3]} for r in reversed(rows)]
+
+    def memory_add(self, tenant: str, fact: str, about: str | None, by: str) -> int:
+        with self._lock:
+            same = self._db.execute("SELECT id FROM memory WHERE tenant=? AND lower(fact)=lower(?)", (tenant, fact)).fetchone()
+            if same:
+                return int(same[0])
+            cur = self._db.execute("INSERT INTO memory (tenant, fact, about, by, at) VALUES (?, ?, ?, ?, ?)",
+                                   (tenant, fact, about, by, time.time()))
+            self._db.execute("DELETE FROM memory WHERE tenant=? AND id NOT IN (SELECT id FROM memory WHERE tenant=? ORDER BY id DESC LIMIT ?)",
+                             (tenant, tenant, MEMORY_KEPT))
+            self._db.commit()
+        return int(cur.lastrowid)
+
+    def memory_forget(self, tenant: str, memory_id: int) -> bool:
+        with self._lock:
+            cur = self._db.execute("DELETE FROM memory WHERE tenant=? AND id=?", (tenant, memory_id))
+            self._db.commit()
+        return cur.rowcount == 1
 
     def move_sender(self, old: str, new: str) -> None:
         """A customer changed their WhatsApp number: keep their conversation."""

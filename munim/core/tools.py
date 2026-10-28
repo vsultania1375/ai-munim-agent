@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from munim.core.drafts import (
@@ -40,6 +41,7 @@ CANCELLABLE = (*SOURCE_DOCTYPES, "Payment Entry", "Purchase Invoice", "Journal E
 RATE_SOURCES = ("price_list", "user_stated", "document")
 PAYMENT_MODES = ("Cash", "UPI", "Bank Transfer", "Cheque")
 MAX_QTY = Decimal(100000)
+USUAL_BILLS = 8  # how far back "the usual" looks
 GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 
 _LINE_SCHEMA = {
@@ -280,6 +282,33 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "builds it, then tell them it is noted and offer the closest thing you CAN do. Never just say it is impossible."
         ),
         "input_schema": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]},
+    },
+    {
+        "name": "remember",
+        "description": (
+            "Owner only: keep a lasting fact about the business or a customer/supplier that should shape future "
+            "work ('Gupta ji 30 din me paisa dete hain', 'Sharma ji ke challan pe rate mat dikhana', 'Sunday band'). "
+            "One short sentence in the owner's words. Not for one-off orders, totals or anything ERPNext already stores "
+            "(rates, discounts, dues). Use it when they say yaad rakhna/remember, or state a clear standing rule."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "fact": {"type": "string"}, "about": {"type": "string", "description": "customer/supplier name, if any"}},
+            "required": ["fact"]},
+    },
+    {
+        "name": "forget",
+        "description": "Owner only: drop a remembered fact by its id (from business_memory in <state>).",
+        "input_schema": {"type": "object", "properties": {"memory_id": {"type": "integer"}}, "required": ["memory_id"]},
+    },
+    {
+        "name": "customer_usual",
+        "description": (
+            "What a customer usually buys, worked out by code from their recent final bills: items, usual qty, how "
+            "often they appear, last rate and date, and how many days apart they buy. For 'Gupta ji ka usual', "
+            "'wahi jo hamesha lete hain', or to suggest an order. Then propose the document with those items and qty "
+            "(rate_source price_list unless the owner asks for the old rate: then document with last_rate)."
+        ),
+        "input_schema": {"type": "object", "properties": {"customer_id": {"type": "string"}}, "required": ["customer_id"]},
     },
     {
         "name": "online_payments",
@@ -936,6 +965,61 @@ class ToolExecutor:
         note = self._replaced_note()
         self.state.draft = Draft(kind="brand", brand={**palette, "details": details})
         return {**await self._publish(), **note}
+
+    async def _t_remember(self, fact: str, about: str | None = None) -> dict[str, Any]:
+        if not self.state.can_submit:
+            raise ToolInputError("only the owner can add to the business memory")
+        memory = getattr(self, "memory", None)
+        if memory is None:
+            raise ToolInputError("memory is not available here")
+        fact = " ".join((fact or "").split())[:200]
+        if len(fact) < 4:
+            raise ToolInputError("fact is empty")
+        return {"remembered": True, "memory_id": memory[1](fact, (about or "").strip()[:80] or None)}
+
+    async def _t_forget(self, memory_id: Any) -> dict[str, Any]:
+        if not self.state.can_submit:
+            raise ToolInputError("only the owner can change the business memory")
+        memory = getattr(self, "memory", None)
+        try:
+            ok = memory is not None and memory[2](int(memory_id))
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            raise ToolInputError("no such memory id; see business_memory in <state>")
+        return {"forgotten": True}
+
+    async def _t_customer_usual(self, customer_id: str) -> dict[str, Any]:
+        customer = await self.erp.get_customer(customer_id)
+        if customer is None:
+            raise ToolInputError("unknown customer_id; call find_customer first")
+        docs = [d for d in await self.erp.recent_documents(customer_id, limit=20)
+                if d.get("status") == "submitted" or d.get("docstatus") == 1]
+        bills = [d for d in docs if d["doctype"] == "Sales Invoice"] or [d for d in docs if d["doctype"] == "Sales Order"]
+        bills = bills[:USUAL_BILLS]  # newest first; invoices only, so order -> challan -> bill isn't counted three times
+        seen: dict[str, dict[str, Any]] = {}
+        for doc in bills:
+            try:
+                lines = (await self.erp.document_lines(doc["doctype"], doc["name"])).lines
+            except ConversionError:
+                continue
+            for line in lines:
+                row = seen.setdefault(line.item_code, {"qtys": [], "last_rate": str(line.rate), "last_date": doc.get("date")})
+                row["qtys"].append(line.qty)
+        if not seen:
+            return {"customer": customer.name, "bills_seen": 0, "usual": [], "note": "no final bills yet"}
+        need = 1 if len(bills) < 3 else 2  # with a few bills, anything bought twice is a habit
+        usual = []
+        for code, row in sorted(seen.items(), key=lambda kv: -len(kv[1]["qtys"])):
+            if len(row["qtys"]) < need:
+                continue
+            item = await self.erp.get_item(code)
+            usual.append({"item_code": code, "item_name": item.name if item else code, "usual_qty": str(median(row["qtys"])),
+                          "in_bills": f"{len(row['qtys'])} of {len(bills)}", "last_rate": row["last_rate"], "last_date": row["last_date"]})
+        dates = sorted({date.fromisoformat(str(d["date"])[:10]) for d in bills if d.get("date")})
+        gap = round((dates[-1] - dates[0]).days / (len(dates) - 1)) if len(dates) > 1 else None
+        return {"customer": customer.name, "bills_seen": len(bills), "usual": usual[:12], "buys_every_days": gap,
+                "last_bill": str(dates[-1]) if dates else None}
 
     async def _t_online_payments(self, action: str) -> dict[str, Any]:
         if not self.state.can_submit:
