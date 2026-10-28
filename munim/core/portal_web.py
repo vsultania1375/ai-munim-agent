@@ -233,11 +233,14 @@ def mount_portal(
     connected_apps: Callable[[str], list[dict[str, Any]]] | None = None,
     disconnect_app: Callable[[str, str], None] | None = None,
     payments: PaymentService | None = None,
+    host_for: Callable[[str], str] | None = None,
 ) -> None:
     def site_url(tenant: Tenant) -> str | None:
         site = tenant.erp_site
         if not site:
             return None
+        if host_for is not None:
+            return f"https://{host_for(site)}"
         host = f"demo.{base_domain}" if site == DEMO_SITE else f"{site}.{base_domain}"
         return f"https://{host}"
 

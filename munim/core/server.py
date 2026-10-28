@@ -40,7 +40,7 @@ from munim.core.portal_web import mount_portal
 from munim.core.provisioning import Provisioner, load_pool
 from munim.core.resolver import JevTurnResolver, NullResolver
 from munim.core.secretbox import SecretBox
-from munim.core.sso import SSOStore, erp_session, mount_sso
+from munim.core.sso import SSOStore, erp_session, mount_sso, site_from_host
 from munim.core.state import StateStore
 from munim.core.tenants import DEMO_SITE, TenantStore
 from munim.core.walog import WALog
@@ -246,7 +246,7 @@ def create_app(env_file: Path | None = None) -> FastAPI:
             return None
         if not erp_password(tenant):
             await reset_sso_password(tenant, site)
-        return f"https://{web_host(site, base_domain, DEMO_SITE)}/munim-sso?t={sso.mint(tenant.phone, site)}"
+        return f"https://{host_for(site)}/munim-sso?t={sso.mint(tenant.phone, site)}"
 
     async def start_session(phone: str, site: str) -> dict[str, str] | None:
         tenant = tenants.get(phone)
@@ -263,7 +263,7 @@ def create_app(env_file: Path | None = None) -> FastAPI:
         site = tenant.erp_site
         if not site or provisioner is None or site not in pool:
             return [Outbound("text", t("web.not_ready", lang))]
-        url = f"https://{web_host(site, base_domain, DEMO_SITE)}"
+        url = f"https://{host_for(site)}"
         try:
             if first_time:
                 return [Outbound("text", t("web.sso_link", lang, url=await erp_link(tenant)))]
@@ -523,6 +523,11 @@ def create_app(env_file: Path | None = None) -> FastAPI:
     def site_company(site: str) -> str | None:
         return next((m.company for m in tenants.members(site) if m.company), None)
 
+    def host_for(site: str) -> str:
+        """The business's web address: demo.<domain>, or <its-name>.<domain>."""
+        label = None if site == DEMO_SITE else tenants.label_for(site, site_company(site))
+        return web_host(site, base_domain, DEMO_SITE, label)
+
     async def join_team(tenant, code: str, lang: str) -> list[Outbound]:
         if tenant.status == "active" and tenant.site and tenant.role in {"owner", "tester"}:
             return [Outbound("text", t("team.already", lang, company=tenant.company or tenant.site))]
@@ -645,8 +650,10 @@ def create_app(env_file: Path | None = None) -> FastAPI:
         mcp_store = OAuthStore(Path(".run/v2/mcp_oauth.db"))  # shared: the portal lists and disconnects AI apps
         mount_portal(app, portal=portal, tenants=tenants, bot_number=bot_number, base_domain=base_domain,
                      send_password=send_password, open_erp=erp_link, connected_apps=mcp_store.apps_for,
-                     disconnect_app=lambda phone, client_id: mcp_store.revoke_subject(phone, client_id), payments=payments)
-    mount_sso(app, sso=sso, base_domain=base_domain, demo_site=DEMO_SITE, start_session=start_session)
+                     disconnect_app=lambda phone, client_id: mcp_store.revoke_subject(phone, client_id), payments=payments,
+                     host_for=host_for)
+    mount_sso(app, sso=sso, base_domain=base_domain, demo_site=DEMO_SITE, start_session=start_session,
+              resolve_label=tenants.site_for_label)
 
     async def replay_pending() -> None:
         pending = store.inbox_pending()
@@ -796,10 +803,20 @@ def create_app(env_file: Path | None = None) -> FastAPI:
         return {"ok": True, "jev": bool(jev_key), "erp": "erpnext" if erp_url else "demo", "free_sites": free,
                 "spent_today_usd": round(ledger.spent_today(), 4)}
 
+    @app.get("/caddy/site")
+    async def caddy_site(request: Request) -> Response:
+        """Caddy forward_auth for the web ERP: which ERPNext site serves this business's address."""
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        site = site_from_host(host, base_domain, DEMO_SITE, tenants.site_for_label)
+        if site is None or (site != DEMO_SITE and site not in pool):
+            return Response("unknown", status_code=404)
+        return Response("ok", headers={"X-Erp-Site": site})
+
     @app.get("/caddy/ask")
     async def caddy_ask(domain: str = "") -> Response:
         """Caddy on-demand TLS: only issue certificates for hosts we actually serve."""
-        allowed = {base_domain, f"demo.{base_domain}"} | {f"{site}.{base_domain}" for site in tenants.claimed_sites()}
+        names = tenants.claimed_sites() | tenants.web_labels()
+        allowed = {base_domain, f"demo.{base_domain}"} | {f"{name}.{base_domain}" for name in names}
         return Response("ok" if domain in allowed else "no", status_code=200 if domain in allowed else 404)
 
     @app.get("/wa/webhook")

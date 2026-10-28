@@ -34,6 +34,7 @@ https://demo.aimunim.duckdns.org {
 	}
 }
 
+# <business-name>.<domain> (or the older <site>.<domain>): the bot says which ERPNext site serves it.
 https://*.aimunim.duckdns.org {
 	tls {
 		on_demand
@@ -50,8 +51,12 @@ https://*.aimunim.duckdns.org {
 		reverse_proxy bot:8800
 	}
 	handle {
+		forward_auth bot:8800 {
+			uri /caddy/site
+			copy_headers X-Erp-Site
+		}
 		reverse_proxy frontend:8080 {
-			header_up Host {labels.3}
+			header_up Host {http.request.header.X-Erp-Site}
 		}
 	}
 }

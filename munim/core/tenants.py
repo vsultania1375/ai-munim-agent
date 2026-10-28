@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -10,6 +11,13 @@ from pathlib import Path
 from typing import Any
 
 DEMO_SITE = "frontend"
+RESERVED_LABELS = {"demo", "www", "api", "mcp", "admin", "portal", "app", "mail", "erp"}
+
+
+def slugify(name: str) -> str:
+    """'Sharma Hardware & Sons' -> 'sharma-hardware-sons' (DNS label: a-z, 0-9, hyphen, at most 30)."""
+    words = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return words[:30].rstrip("-")
 
 
 @dataclass
@@ -41,6 +49,8 @@ class TenantStore:
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.execute("CREATE TABLE IF NOT EXISTS tenant (phone TEXT PRIMARY KEY, body TEXT)")
         self._db.execute("CREATE TABLE IF NOT EXISTS site_claim (site TEXT PRIMARY KEY, phone TEXT, at REAL)")
+        # the web address of each business: <label>.<domain>, from its name (sites keep their pool names)
+        self._db.execute("CREATE TABLE IF NOT EXISTS site_label (label TEXT PRIMARY KEY, site TEXT UNIQUE, at REAL)")
         self._db.commit()
         self.testers = testers or set()
 
@@ -129,6 +139,39 @@ class TenantStore:
     def has_claim(self, phone: str) -> bool:
         with self._lock:
             return self._db.execute("SELECT 1 FROM site_claim WHERE phone=?", (phone,)).fetchone() is not None
+
+    def label_for(self, site: str, name: str | None) -> str:
+        """The business's web label, made from its name the first time (unique; the site name if there is no name)."""
+        with self._lock:
+            row = self._db.execute("SELECT label FROM site_label WHERE site=?", (site,)).fetchone()
+            if row:
+                return row[0]
+            base = slugify(name or "")
+            if len(base) < 3 or base in RESERVED_LABELS or re.fullmatch(r"tenant-\d+", base):
+                return site
+            taken = {r[0] for r in self._db.execute("SELECT label FROM site_label")}
+            taken |= {r[0] for r in self._db.execute("SELECT site FROM site_claim")}
+            label, n = base, 2
+            while label in taken:
+                label = f"{base[:27]}-{n}"
+                n += 1
+            self._db.execute("INSERT INTO site_label VALUES (?, ?, ?)", (label, site, time.time()))
+            self._db.commit()
+        return label
+
+    def site_for_label(self, label: str) -> str | None:
+        """Which business a web label belongs to: its name label, or the plain site name (older links keep working)."""
+        label = (label or "").lower()
+        with self._lock:
+            row = self._db.execute("SELECT site FROM site_label WHERE label=?", (label,)).fetchone()
+            if row:
+                return row[0]
+            claimed = self._db.execute("SELECT 1 FROM site_claim WHERE site=?", (label,)).fetchone()
+        return label if claimed else None
+
+    def web_labels(self) -> set[str]:
+        with self._lock:
+            return {r[0] for r in self._db.execute("SELECT label FROM site_label")}
 
     def claimed_sites(self) -> set[str]:
         with self._lock:

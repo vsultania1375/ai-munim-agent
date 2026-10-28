@@ -33,8 +33,9 @@ class WebLogin:
     password: str
 
 
-def web_host(site: str, base_domain: str, demo_site: str) -> str:
-    return f"demo.{base_domain}" if site == demo_site else f"{site}.{base_domain}"
+def web_host(site: str, base_domain: str, demo_site: str, label: str | None = None) -> str:
+    """demo.<domain> for the demo; <label>.<domain> for a business (its name label, else the site name)."""
+    return f"demo.{base_domain}" if site == demo_site else f"{label or site}.{base_domain}"
 
 
 def login_id_for(phone: str) -> str:

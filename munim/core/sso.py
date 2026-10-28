@@ -23,7 +23,7 @@ SSO_TTL = 15 * 60
 SESSION_COOKIES = ("sid", "system_user", "full_name", "user_id", "user_image", "user_lang")
 
 
-def site_from_host(host: str, base_domain: str, demo_site: str) -> str | None:
+def site_from_host(host: str, base_domain: str, demo_site: str, resolve: Callable[[str], str | None] | None = None) -> str | None:
     host = (host or "").split(":")[0].lower()
     suffix = f".{base_domain}"
     if not host.endswith(suffix):
@@ -31,7 +31,9 @@ def site_from_host(host: str, base_domain: str, demo_site: str) -> str | None:
     label = host[: -len(suffix)]
     if not label or "." in label:
         return None
-    return demo_site if label == "demo" else label
+    if label == "demo":
+        return demo_site
+    return resolve(label) if resolve else label
 
 
 class SSOStore:
@@ -86,10 +88,11 @@ def mount_sso(
     base_domain: str,
     demo_site: str,
     start_session: Callable[[str, str], Awaitable[dict[str, str] | None]],
+    resolve_label: Callable[[str], str | None] | None = None,
 ) -> None:
     @app.get("/munim-sso")
     async def munim_sso(request: Request, t: str = "") -> Response:
-        site = site_from_host(request.headers.get("host", ""), base_domain, demo_site)
+        site = site_from_host(request.headers.get("host", ""), base_domain, demo_site, resolve_label)
         phone = sso.consume(t, site) if site and t else None
         cookies = await start_session(phone, site) if phone and site else None
         if not cookies:
