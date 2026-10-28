@@ -201,6 +201,11 @@ class WhisperTranscriber:
             self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8", download_root=self.cache_dir)
         return self._model
 
+    async def warm(self) -> None:
+        """Load the model now (server start), not on the first voice note."""
+        async with self._lock:
+            await asyncio.to_thread(self._load)
+
     def _run(self, audio: bytes) -> str:
         model = self._load()
         samples = decode_audio_16k(audio)
@@ -271,6 +276,10 @@ class PiperSpeaker:
                     part.rename(path)
             self._voices[lang] = PiperVoice.load(str(model))
         return self._voices[lang]
+
+    async def warm(self) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._voice, "hi")
 
     def _run(self, text: str, lang: str) -> bytes:
         import subprocess

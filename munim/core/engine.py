@@ -83,6 +83,19 @@ def text(body: str) -> Outbound:
     return Outbound("text", body)
 
 
+async def render_speech(speaker: Any, media_dir: Path, item: Outbound) -> Outbound | None:
+    """A deferred voice reply ('speech') -> an OGG voice note on disk, or None if speech isn't available."""
+    if speaker is None or not item.text:
+        return None
+    audio = await speaker.speak(item.text, item.meta.get("lang"))
+    if not audio:
+        return None
+    path = media_dir / "voice" / f"{item.meta.get('id') or uuid.uuid4().hex}.ogg"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(audio)
+    return Outbound("audio", "", path=path, filename=path.name, meta={"kind": "voice_reply", "spoken": item.text[:200]})
+
+
 class AgentEngine:
     def __init__(
         self,
@@ -118,12 +131,26 @@ class AgentEngine:
         self.clock = clock
 
     # ---- entry point -------------------------------------------------
-    async def handle(self, msg: Inbound, *, can_submit: bool = True) -> list[Outbound]:
+    async def handle(self, msg: Inbound, *, can_submit: bool = True, early: Any = None) -> list[Outbound]:
+        """One turn. `early` (optional async callback) gets messages worth sending before the turn ends."""
         state = self.store.load(self.tenant, msg.sender)
         state.can_submit = can_submit
         self._expire(state)
+
+        async def send_early(item: Outbound) -> bool:
+            if early is None:
+                return False
+            if item.text and not styles.uses_emoji(state.style):
+                item.text = styles.strip_emoji(item.text)
+            try:
+                await early(item)
+                return True
+            except Exception:  # noqa: BLE001 - it goes with the reply instead
+                log.warning("early send failed")
+                return False
+
         try:
-            out = await self._dispatch(msg, state, can_submit)
+            out = await self._dispatch(msg, state, can_submit, send_early)
         except BudgetExceeded:
             log.warning("daily LLM budget reached")
             out = [text(t("busy", state.lang))]
@@ -139,7 +166,7 @@ class AgentEngine:
         self.store.save(self.tenant, state)
         return out
 
-    async def _dispatch(self, msg: Inbound, state: ConversationState, can_submit: bool = True) -> list[Outbound]:
+    async def _dispatch(self, msg: Inbound, state: ConversationState, can_submit: bool = True, early: Any = None) -> list[Outbound]:
         if msg.kind in {"text", "document", "image"} and msg.text:
             state.lang = detect_lang(msg.text, state.lang)
             state.style = styles.observe(state.style, msg.text)
@@ -155,7 +182,7 @@ class AgentEngine:
             state.__dict__.update(ConversationState(sender=state.sender).__dict__)
             return [text(t("reset_done", lang) + t(self.welcome_key, lang))]
         if msg.kind == "audio":
-            return await self._voice(msg, state)
+            return await self._voice(msg, state, early)
         if msg.kind in {"document", "image"}:
             return await self._media(msg, state)
         if msg.kind == "contact":
@@ -501,7 +528,7 @@ class AgentEngine:
         )
 
     # ---- media -------------------------------------------------------
-    async def _voice(self, msg: Inbound, state: ConversationState) -> list[Outbound]:
+    async def _voice(self, msg: Inbound, state: ConversationState, early: Any = None) -> list[Outbound]:
         if not msg.media or isinstance(self.transcriber, NoTranscriber):
             return [text(t("voice_unsupported", state.lang))]
         if len(msg.media) > MAX_AUDIO_BYTES:
@@ -515,7 +542,8 @@ class AgentEngine:
         label = "[voice note]" if msg.voice else "[audio file]"
         if self.walog:
             self.walog.update_meta(msg.message_id, transcript=heard[:1000])
-        return [echo, *await self._agent_turn(state, user_text=heard, display=f"{label} {heard}", msg=msg)]
+        first = [] if early is not None and await early(echo) else [echo]  # they see what we heard at once
+        return [*first, *await self._agent_turn(state, user_text=heard, display=f"{label} {heard}", msg=msg)]
 
     async def _contact(self, card: dict[str, str | None], state: ConversationState) -> list[Outbound]:
         """A shared contact becomes a new-customer preview without any model call."""
@@ -639,13 +667,8 @@ class AgentEngine:
             out.append(text(message))
         if effects.card and state.draft:
             out.append(self._card_from(state, effects.card))
-        if speech and self._speaks(msg, state):
-            audio = await self.speaker.speak(speech, state.lang)
-            if audio:
-                path = self.media_dir / "voice" / f"{_safe(msg.message_id)}.ogg"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(audio)
-                out.append(Outbound("audio", "", path=path, filename=path.name, meta={"kind": "voice_reply", "spoken": speech[:200]}))
+        if speech and self._speaks(msg, state):  # spoken after the text is sent (render_voice), so text never waits
+            out.append(Outbound("speech", speech[:600], meta={"kind": "voice_reply", "lang": state.lang, "id": _safe(msg.message_id)}))
         if effects.question:
             state.question = effects.question
             out.append(Outbound("buttons", effects.question.question[:1024], buttons=effects.question.options,
@@ -747,6 +770,9 @@ class AgentEngine:
             )
             lines.append(f"recently_created: {recent}")
         return "\n".join(lines)
+
+    async def render_voice(self, item: Outbound) -> Outbound | None:
+        return await render_speech(self.speaker, self.media_dir, item)
 
     def _speaks(self, msg: Inbound | None, state: ConversationState) -> bool:
         return bool(msg and msg.kind == "audio" and state.voice_replies and getattr(self.speaker, "available", False))

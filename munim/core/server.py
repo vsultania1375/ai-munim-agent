@@ -27,7 +27,7 @@ from munim.core.automation import (
     window_open,
 )
 from munim.core.clock import IST, today_ist
-from munim.core.engine import AgentEngine, Inbound, Outbound
+from munim.core.engine import AgentEngine, Inbound, Outbound, render_speech
 from munim.core.erp import DemoERP
 from munim.core.erp_erpnext import ERPNextPort
 from munim.core.guards import BudgetedLLM, UsageLedger
@@ -371,7 +371,7 @@ def create_app(env_file: Path | None = None) -> FastAPI:
             tenants.save(tenant)
             return out
         site = tenant.erp_site or DEMO_SITE
-        out = await engine_for(site, tenant.company).handle(inbound, can_submit=tenant.role != "staff")
+        out = await engine_for(site, tenant.company).handle(inbound, can_submit=tenant.role != "staff", early=notify)
         if tenant.role == "staff":
             await tell_owner(tenant, out)
         else:
@@ -541,6 +541,10 @@ def create_app(env_file: Path | None = None) -> FastAPI:
         replies = await route(inbound)
         for item in replies:
             try:
+                if item.kind == "speech":  # the voice reply is made after the text above has been sent
+                    item = await render_speech(speaker, Path(".run/v2/media"), item)
+                    if item is None:
+                        continue
                 await send(sender, item)
             except WhatsAppError as exc:
                 log.error("send failed: %s", type(exc).__name__)
@@ -622,6 +626,19 @@ def create_app(env_file: Path | None = None) -> FastAPI:
         app.state.janitor = asyncio.create_task(loop())
 
     app.router.on_startup.append(media_janitor)
+
+    async def warm_models() -> None:
+        async def load() -> None:  # in the background: the first voice note shouldn't wait ~10 s for a model load
+            for model in (transcriber, speaker):
+                if hasattr(model, "warm"):
+                    try:
+                        await model.warm()
+                    except Exception:  # noqa: BLE001 - it loads on first use instead
+                        log.warning("model warm-up failed: %s", type(model).__name__)
+
+        app.state.warm = asyncio.create_task(load())
+
+    app.router.on_startup.append(warm_models)
 
     async def morning_summary() -> None:
         async def loop() -> None:
