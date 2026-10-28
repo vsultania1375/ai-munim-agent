@@ -323,3 +323,12 @@ async def test_learned_alias_resolves_next_time(setup):
     llm.script([("save_alias", {"kind": "item", "alias": "x", "target_id": "NOPE"})], "ok")
     await engine.handle(msg("x matlab nope", 3))
     assert "error" in llm.results[-1][0]
+
+
+async def test_payment_card_tells_owner_it_is_final_and_staff_it_is_a_draft(setup):
+    engine, llm, _ = setup
+    llm.script([("propose_payment", {"customer_id": "CUST-0002", "amount": 500, "mode": "UPI"})], "Preview")
+    owner = (await engine.handle(msg("Verma ji se 500 UPI aaya")))[-1].text
+    llm.script([("propose_payment", {"customer_id": "CUST-0002", "amount": 500, "mode": "UPI"})], "Preview")
+    staff = (await engine.handle(Inbound("s1", "919800000002", "text", text="Verma ji se 500 UPI aaya"), can_submit=False))[-1].text
+    assert owner != staff and "draft" not in owner.lower() and "draft" in staff.lower()

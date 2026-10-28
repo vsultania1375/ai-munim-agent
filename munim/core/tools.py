@@ -157,7 +157,7 @@ class ToolExecutor(PurchaseTools, CorrectionTools, BusinessTools):
         if draft.kind == "payment":
             return render_payment_preview(
                 draft.customer_name or "", Decimal(draft.payment_amount or 0), draft.payment_mode or "", self.demo_label,
-                self.state.lang, draft.allocations,
+                self.state.lang, draft.allocations, final=self.state.can_submit,
             )
         if draft.kind in {"new_customer", "new_supplier"}:
             info = draft.new_customer or {}
