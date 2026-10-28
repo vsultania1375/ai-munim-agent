@@ -86,6 +86,7 @@ MAPPER_METHODS = {  # ERPNext's own "make next document" mappers: they keep link
 }
 ALLOWED_METHODS = MAPPER_METHODS | {
     "erpnext.accounts.doctype.sales_invoice.sales_invoice.make_sales_return",
+    "erpnext.accounts.doctype.purchase_invoice.purchase_invoice.make_debit_note",
     "hrms.payroll.doctype.payroll_entry.payroll_entry.get_payroll_entries_for_jv",
 }
 

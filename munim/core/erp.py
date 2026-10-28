@@ -173,6 +173,16 @@ class ErpPort(Protocol):
 
     async def purchase_tax_mode(self, supplier_id: str) -> str: ...
 
+    async def supplier_outstanding(self, supplier_id: str) -> list[OpenInvoice]: ...  # their final bills we still owe on
+
+    async def create_supplier_payment(self, supplier_id: str, amount: Decimal, mode: str, reference: str,
+                                      allocations: list[tuple[str, Decimal]], *, final: bool = False) -> CreatedDocument: ...
+
+    async def map_purchase_return(self, invoice: str) -> MappedDocument: ...  # what can still go back (positive qty)
+
+    async def create_purchase_return(self, invoice: str, lines: list[DraftLine], reference: str, *,
+                                     final: bool = False) -> CreatedDocument: ...
+
     async def expense_accounts(self) -> list[str]: ...
 
     async def create_purchase_invoice(
@@ -486,6 +496,67 @@ class DemoERP:
                                "date": self.today.isoformat(), "lines": [(x.item_code, str(x.qty), str(x.rate)) for x in lines]})
         return CreatedDocument("Purchase Invoice", name, None, computed.total, submitted=final)
 
+    def _purchase(self, invoice: str) -> dict:
+        doc = next((d for d in self.documents if d["doctype"] == "Purchase Invoice" and d["name"] == invoice), None)
+        if doc is None:
+            raise ConversionError(f"Purchase Invoice {invoice} not found")
+        if doc["docstatus"] != 1:
+            raise ConversionError(f"{invoice} is not final (draft or cancelled)")
+        return doc
+
+    async def supplier_outstanding(self, supplier_id: str) -> list[OpenInvoice]:
+        found = []
+        for doc in self.documents:
+            if doc["doctype"] != "Purchase Invoice" or doc["customer_id"] != supplier_id or doc["docstatus"] != 1:
+                continue
+            left = money(Decimal(doc["total"]) - Decimal(doc.get("settled", "0")))
+            if left > 0:
+                day = date.fromisoformat(doc["date"])
+                found.append(OpenInvoice(doc["name"], supplier_id, day, day, money(Decimal(doc["total"])), left))
+        return found
+
+    async def create_supplier_payment(self, supplier_id: str, amount: Decimal, mode: str, reference: str,
+                                      allocations: list[tuple[str, Decimal]], *, final: bool = False) -> CreatedDocument:
+        name = f"PAY-OUT-DEMO-{next(self._counter):04d}"
+        self.documents.append({"doctype": "Payment Entry", "name": name, "customer_id": supplier_id, "payment_type": "Pay",
+                               "total": str(money(amount)), "mode": mode, "docstatus": int(final), "date": self.today.isoformat()})
+        if final:
+            for invoice, part in allocations:
+                doc = self._purchase(invoice)
+                doc["settled"] = str(money(Decimal(doc.get("settled", "0")) + part))
+        return CreatedDocument("Payment Entry", name, None, money(amount), submitted=final)
+
+    async def map_purchase_return(self, invoice: str) -> MappedDocument:
+        doc = self._purchase(invoice)
+        back = doc.setdefault("returned", {})
+        lines = tuple(DraftLine(c, Decimal(q) - Decimal(back.get(c, "0")), Decimal(r)) for c, q, r in doc["lines"]
+                      if Decimal(q) - Decimal(back.get(c, "0")) > 0)
+        if not lines:
+            raise ConversionError(f"everything on {invoice} has already been returned")
+        supplier = await self.get_supplier(doc["customer_id"])
+        return MappedDocument("Purchase Invoice", invoice, doc["customer_id"], supplier.name if supplier else doc["customer_id"], lines)
+
+    async def create_purchase_return(self, invoice: str, lines: list[DraftLine], reference: str, *,
+                                     final: bool = False) -> CreatedDocument:
+        from munim.core.drafts import compute_lines
+
+        open_lines = {x.item_code: x.qty for x in (await self.map_purchase_return(invoice)).lines}
+        for line in lines:
+            if line.qty > open_lines.get(line.item_code, Decimal(0)):
+                raise ConversionError(f"more {line.item_code} than is left to return on that bill")
+        doc = self._purchase(invoice)
+        computed = compute_lines([(self.items[x.item_code], x.qty, x.rate) for x in lines], await self.purchase_tax_mode(doc["customer_id"]))
+        name = f"PINV-RET-DEMO-{next(self._counter):04d}"
+        self.documents.append({"doctype": "Purchase Invoice", "name": name, "customer_id": doc["customer_id"], "is_return": 1,
+                               "return_against": invoice, "total": str(-computed.total), "docstatus": int(final),
+                               "date": self.today.isoformat(), "lines": [(x.item_code, str(-x.qty), str(x.rate)) for x in lines]})
+        if final:
+            back = doc.setdefault("returned", {})
+            for x in lines:
+                back[x.item_code] = str(Decimal(back.get(x.item_code, "0")) + x.qty)
+            doc["settled"] = str(money(Decimal(doc.get("settled", "0")) + computed.total))
+        return CreatedDocument("Purchase Invoice", name, None, computed.total, submitted=final)
+
     async def create_expense(self, account: str, amount: Decimal, mode: str, note: str, reference: str, *,
                              final: bool = False) -> CreatedDocument:
         name = f"JV-DEMO-{next(self._counter):04d}"
@@ -520,7 +591,17 @@ class DemoERP:
             return [{"doctype": d["doctype"], "name": d["name"], "customer": cname(d["customer_id"]), "total": d["total"],
                      "status": "Draft" if d["docstatus"] == 0 else "Open"} for d in self.documents
                     if d["docstatus"] == 0 or d["doctype"] in {"Quotation", "Sales Order"}]
-        return []  # demo items are not stock-tracked
+        if kind == "bill_stock":  # bought minus sold from final bills (returns carry negative qty)
+            moved: dict[str, Decimal] = {}
+            for doc in self.documents:
+                sign = {"Purchase Invoice": 1, "Sales Invoice": -1}.get(doc["doctype"])
+                if sign is None or doc["docstatus"] != 1 or doc.get("is_opening") == "Yes":
+                    continue
+                for code, qty, _ in doc.get("lines", []):
+                    if item_code is None or code == item_code:
+                        moved[code] = moved.get(code, Decimal(0)) + sign * Decimal(qty)
+            return [{"item_code": c, "item_name": self.items[c].name, "qty": q} for c, q in moved.items() if q]
+        return []  # demo items are not stock-tracked per warehouse
 
     async def tax_mode(self, customer_id: str) -> str:
         from munim.core.gst import tax_mode

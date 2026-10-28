@@ -21,12 +21,14 @@ from munim.core.drafts import (
     fmt_rs,
     render_cancel_preview,
     render_customer_preview,
+    render_debit_note_preview,
     render_expense_preview,
     render_payment_preview,
     render_purchase_preview,
     render_sales_preview,
+    render_supplier_payment_preview,
 )
-from munim.core.erp import CONVERSIONS, ConversionError, ErpPort, money
+from munim.core.erp import CONVERSIONS, ConversionError, DraftLine, ErpPort, money
 from munim.core.gst import TAX_NONE, clean_hsn
 from munim.core.i18n import t
 from munim.core.reports import PERIODS, REPORTS, ReportError
@@ -220,6 +222,29 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "The credit reduces what is due on that invoice."
         ),
         "input_schema": {"type": "object", "properties": {"invoice": {"type": "string"}}, "required": ["invoice"]},
+    },
+    {
+        "name": "propose_supplier_payment",
+        "description": (
+            "Money PAID to a supplier ('Shree Cement ko 20000 diye'): preview a payment against their open purchase bills, "
+            "oldest first (code splits it). Amount must be what the user stated. Call find_supplier first."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "supplier_id": {"type": "string"}, "amount": {"type": "number"}, "mode": {"type": "string", "enum": list(PAYMENT_MODES)}},
+            "required": ["supplier_id", "amount", "mode"]},
+    },
+    {
+        "name": "propose_purchase_return",
+        "description": (
+            "Goods sent BACK to a supplier on a final Purchase Invoice ('Shree ko 5 bag wapas bheje'): preview a Debit Note "
+            "against that bill. Without lines, everything still returnable; with lines [{item_code, qty}] only those. Rates "
+            "come from the bill. It reduces what is owed on that bill."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "invoice": {"type": "string"},
+            "lines": {"type": "array", "items": {"type": "object", "properties": {
+                "item_code": {"type": "string"}, "qty": {"type": "number"}}, "required": ["item_code", "qty"]}}},
+            "required": ["invoice"]},
     },
     {
         "name": "propose_cancel",
@@ -578,6 +603,14 @@ class ToolExecutor:
     async def render(self) -> str:
         draft = self.state.draft
         assert draft is not None
+        if draft.kind == "supplier_payment":
+            return render_supplier_payment_preview(draft.customer_name or "", Decimal(draft.payment_amount or 0), draft.payment_mode or "",
+                                                   self.demo_label, self.state.lang, draft.allocations, final=self.state.can_submit)
+        if draft.kind == "debit_note":
+            rows = [(await self.erp.get_item(x.item_code), Decimal(x.qty), Decimal(x.rate)) for x in draft.lines]
+            computed = compute_lines(rows, await self.erp.purchase_tax_mode(draft.customer_id or ""))
+            return render_debit_note_preview(draft.customer_name or "", computed, draft.source["name"], self.demo_label, self.state.lang,
+                                             final=self.state.can_submit)
         if draft.kind == "payment":
             return render_payment_preview(
                 draft.customer_name or "", Decimal(draft.payment_amount or 0), draft.payment_mode or "", self.demo_label,
@@ -819,6 +852,54 @@ class ToolExecutor:
         self.state.draft = Draft(kind="credit_note", customer_id=mapped.customer_id, customer_name=mapped.customer_name, lines=built,
                                  source={"doctype": "Sales Invoice", "name": mapped.source_name})
         return {**await self._publish(), **note, "returnable_only": True}
+
+    async def _t_propose_supplier_payment(self, supplier_id: str, amount: Any, mode: str) -> dict[str, Any]:
+        supplier = await self.erp.get_supplier(supplier_id)
+        if supplier is None:
+            raise ToolInputError("unknown supplier_id; call find_supplier first")
+        if mode not in PAYMENT_MODES:
+            raise ToolInputError(f"mode must be one of {', '.join(PAYMENT_MODES)}")
+        value = money(_decimal(amount, "amount"))
+        bills = sorted(await self.erp.supplier_outstanding(supplier.id), key=lambda i: (i.due_date, i.posting_date))
+        allocations, left = [], value
+        for bill in bills:  # oldest bills first; all arithmetic in code
+            if left <= 0:
+                break
+            take = min(left, bill.outstanding)
+            allocations.append({"invoice": bill.name, "amount": str(take)})
+            left = money(left - take)
+        note = self._replaced_note()
+        self.state.draft = Draft(kind="supplier_payment", customer_id=supplier.id, customer_name=supplier.name, payment_amount=str(value),
+                                 payment_mode=mode, allocations=allocations)
+        return {**await self._publish(), **note}
+
+    async def _t_propose_purchase_return(self, invoice: str, lines: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        try:
+            mapped = await self.erp.map_purchase_return(invoice.strip())
+        except ConversionError as exc:
+            raise ToolInputError(f"ERPNext: {exc}") from exc
+        returnable = {x.item_code: x for x in mapped.lines}
+        chosen = list(mapped.lines)
+        if lines:
+            chosen = []
+            for raw in lines:
+                code = str(raw.get("item_code", ""))
+                if code not in returnable:
+                    raise ToolInputError(f"{code} is not on {mapped.source_name} or already fully returned")
+                qty = _decimal(raw.get("qty"), "qty")
+                if qty > returnable[code].qty:
+                    raise ToolInputError(f"only {returnable[code].qty} of {code} can still go back on {mapped.source_name}")
+                chosen.append(DraftLine(code, qty, returnable[code].rate))
+        built = []
+        for line in chosen:
+            item = await self.erp.get_item(line.item_code)
+            if item is None:
+                raise ToolInputError(f"unknown item {line.item_code}")
+            built.append(DraftLineState(item.code, item.name, item.uom, str(line.qty), str(money(line.rate)), "source"))
+        note = self._replaced_note()
+        self.state.draft = Draft(kind="debit_note", customer_id=mapped.customer_id, customer_name=mapped.customer_name, lines=built,
+                                 source={"doctype": "Purchase Invoice", "name": mapped.source_name})
+        return {**await self._publish(), **note}
 
     async def _t_propose_cancel(self, doctype: str, name: str) -> dict[str, Any]:
         if not self.state.can_submit:

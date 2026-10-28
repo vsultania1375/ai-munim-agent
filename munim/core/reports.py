@@ -151,6 +151,10 @@ async def build(erp: Any, report: str, period: str = "this_month", *, from_date:
         rows = await erp.report_data("stock", today, today, item_code)
         out["stock"] = [{"item": r.get("item_name") or r["item_code"], "warehouse": r.get("warehouse"), "qty": fmt_qty(Decimal(str(r["qty"])))}
                         for r in rows[:30]]
+        if not rows:  # stock isn't moved per warehouse here: work it out from purchase and sales bills instead
+            rows = await erp.report_data("bill_stock", today, today, item_code)
+            out["stock"] = [{"item": r.get("item_name") or r["item_code"], "qty": fmt_qty(Decimal(str(r["qty"])))} for r in rows[:30]]
+            out["basis"] = "bought minus sold, from final bills (no warehouse stock is kept); say so"
         if not rows:
             out["note"] = "no stock-tracked quantities found" + (f" for {item_code}" if item_code else "")
     elif report == "pending":

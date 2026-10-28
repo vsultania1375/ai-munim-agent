@@ -360,6 +360,33 @@ class AgentEngine:
                        "doctype": "Payment Entry"}
             if doc.submitted:
                 created["submitted"] = "1"
+        elif draft.kind == "supplier_payment":
+            doc = await self.erp.create_supplier_payment(
+                draft.customer_id or "", Decimal(draft.payment_amount or 0), draft.payment_mode or "Cash", reference,
+                [(a["invoice"], Decimal(a["amount"])) for a in draft.allocations], final=state.can_submit)
+            label = kind_label("supplier_payment", lang)
+            reply = _approved_text(doc, label, draft.customer_name or "", state.can_submit, lang)
+            out.append(Outbound("text", reply, meta={"kind": "document", "doc": doc.name, "doctype": "Payment Entry",
+                                                     "customer": draft.customer_name, "submitted": doc.submitted}))
+            created = {"draft_id": draft.id, "label": label, "name": doc.name, "customer": draft.customer_name or "",
+                       "doctype": "Payment Entry"}
+            if doc.submitted:
+                created["submitted"] = "1"
+        elif draft.kind == "debit_note":
+            lines = [DraftLine(line.item_code, Decimal(line.qty), Decimal(line.rate)) for line in draft.lines]
+            try:
+                doc = await self.erp.create_purchase_return(draft.source["name"], lines, reference, final=state.can_submit)
+            except ConversionError as exc:
+                return [text(t("cancel.failed", lang, name=draft.source["name"], reason=str(exc)[:300]))]
+            label = kind_label("debit_note", lang)
+            reply = _approved_text(doc, label, draft.customer_name or "", state.can_submit, lang)
+            reply += "\n" + t("preview.against", lang, source=f"Purchase Invoice {draft.source['name']}")
+            out.append(Outbound("text", reply, meta={"kind": "document", "doc": doc.name, "doctype": doc.doctype,
+                                                     "customer": draft.customer_name, "submitted": doc.submitted, "source": draft.source}))
+            created = {"draft_id": draft.id, "label": label, "name": doc.name, "customer": draft.customer_name or "",
+                       "doctype": doc.doctype, "from": f"Purchase Invoice {draft.source['name']}"}
+            if doc.submitted:
+                created["submitted"] = "1"
         elif draft.kind == "credit_note":
             lines = [DraftLine(line.item_code, Decimal(line.qty), Decimal(line.rate)) for line in draft.lines]
             try:
@@ -728,6 +755,13 @@ class AgentEngine:
             rows = "; ".join(f"{x.item_name} [{x.item_code}] qty {x.qty} rate {x.rate} ({x.rate_source})" for x in draft.lines)
             lines.append(f"open_preview: Purchase bill from supplier {draft.customer_name} [{draft.customer_id}] bill {draft.bill_no or '-'} "
                          f"dated {draft.bill_date or '-'} — {rows} (version {draft.version})")
+        elif draft.kind == "supplier_payment":
+            lines.append(f"open_preview: Payment to supplier {draft.customer_name} [{draft.customer_id}] amount {draft.payment_amount} "
+                         f"mode {draft.payment_mode}")
+        elif draft.kind == "debit_note":
+            rows = "; ".join(f"{x.item_name} [{x.item_code}] qty {x.qty} rate {x.rate}" for x in draft.lines)
+            lines.append(f"open_preview: Debit Note (purchase return) against Purchase Invoice {draft.source['name']} to "
+                         f"{draft.customer_name} — {rows} (version {draft.version})")
         elif draft.kind == "credit_note":
             rows = "; ".join(f"{x.item_name} [{x.item_code}] qty {x.qty} rate {x.rate}" for x in draft.lines)
             lines.append(f"open_preview: Credit Note (return) against Sales Invoice {draft.source['name']} for {draft.customer_name} "

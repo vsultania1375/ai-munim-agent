@@ -20,6 +20,8 @@ KIND_LABEL = {
     "expense": "Expense",
     "new_supplier": "New Supplier",
     "new_customer": "Naya Customer",
+    "supplier_payment": "Payment Made",
+    "debit_note": "Debit Note (Purchase Return)",
 }
 
 KIND_DOCTYPE = {
@@ -152,6 +154,38 @@ def render_payment_preview(
     if advance > 0 and allocations is not None:
         lines.append(t("pay.advance", lang, amount=fmt_rs(advance)))
     lines += ["", t("payment_note_final" if final else "payment_note", lang)]
+    if demo_label:
+        lines.append(f"_{demo_label}_")
+    return "\n".join(lines)
+
+
+def render_supplier_payment_preview(
+    supplier: str, amount: Decimal, mode: str, demo_label: str | None, lang: str | None,
+    allocations: list[dict[str, str]], final: bool = False,
+) -> str:
+    lines = [f"*{kind_label('supplier_payment', lang)} — {t('preview', lang)}*", f"{t('label.supplier', lang)}: {supplier}",
+             f"{t('label.amount', lang)}: {fmt_rs(amount)}", f"{t('label.mode', lang)}: {mode}"]
+    if allocations:
+        lines += ["", t("pay.against", lang)] + [f"• {a['invoice']}: {fmt_rs(Decimal(a['amount']))}" for a in allocations]
+    advance = money(amount - sum((Decimal(a["amount"]) for a in allocations), Decimal(0)))
+    if advance > 0:
+        lines.append(t("pay.advance", lang, amount=fmt_rs(advance)))
+    lines += ["", t("payment_note_final" if final else "payment_note", lang)]
+    if demo_label:
+        lines.append(f"_{demo_label}_")
+    return "\n".join(lines)
+
+
+def render_debit_note_preview(
+    supplier: str, computed: Computed, invoice: str, demo_label: str | None, lang: str | None, final: bool = False,
+) -> str:
+    lines = [f"*{kind_label('debit_note', lang)} — {t('preview', lang)}*", f"{t('label.supplier', lang)}: {supplier}",
+             t("preview.against", lang, source=f"Purchase Invoice {invoice}"), ""]
+    for n, row in enumerate(computed.rows, start=1):
+        lines.append(f"{n}. {row.item.name}\n   {fmt_qty(row.qty)} {row.item.uom} × {fmt_rs(row.rate)} = {fmt_rs(row.amount)}")
+    lines += ["", f"Subtotal: {fmt_rs(computed.subtotal)}", _gst_line(computed, lang), f"*Total: {fmt_rs(computed.total)}*", "",
+              t("debit_effect", lang, total=fmt_rs(computed.total), source=invoice), "",
+              t("approve_note_final" if final else "approve_note", lang)]
     if demo_label:
         lines.append(f"_{demo_label}_")
     return "\n".join(lines)

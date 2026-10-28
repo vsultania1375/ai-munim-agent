@@ -159,6 +159,69 @@ class ERPNextPort:
             raise ConversionError(str(exc)) from exc
         return await self._after_insert("Sales Invoice", made, final)
 
+    # ---- supplier side: what we owe, paying it, sending goods back ------
+    async def supplier_outstanding(self, supplier_id: str) -> list[OpenInvoice]:
+        rows = await self.client.list_documents(
+            "Purchase Invoice", filters={"company": self.company, "supplier": supplier_id, "docstatus": 1, "outstanding_amount": [">", 0]},
+            fields=["name", "posting_date", "due_date", "grand_total", "outstanding_amount"], limit_page_length=50,
+            order_by="posting_date asc")
+        return [OpenInvoice(r["name"], supplier_id, date.fromisoformat(str(r["posting_date"])),
+                            date.fromisoformat(str(r.get("due_date") or r["posting_date"])), money(r["grand_total"]),
+                            money(r["outstanding_amount"])) for r in rows]
+
+    async def create_supplier_payment(self, supplier_id: str, amount: Decimal, mode: str, reference: str,
+                                      allocations: list[tuple[str, Decimal]], *, final: bool = False) -> CreatedDocument:
+        cash = mode == "Cash"
+        abbr = await self._company_abbr()
+        payload: dict[str, Any] = {
+            "payment_type": "Pay", "party_type": "Supplier", "party": supplier_id, "company": self.company,
+            "paid_amount": float(amount), "received_amount": float(amount),
+            "mode_of_payment": "Cash" if cash else "Bank Draft",
+            "paid_from": f"Cash - {abbr}" if cash else f"Bank - {abbr}", "paid_to": f"Creditors - {abbr}",
+        }
+        if not cash:
+            payload.update({"reference_no": f"WhatsApp {mode}", "reference_date": self.today.isoformat()})
+        if allocations:
+            payload["references"] = [{"reference_doctype": "Purchase Invoice", "reference_name": inv, "allocated_amount": float(amt)}
+                                     for inv, amt in allocations]
+        doc = await self.client.create_draft_document("Payment Entry", payload)
+        submitted, failed = await self._finalise("Payment Entry", doc.name) if final else (False, False)
+        return CreatedDocument("Payment Entry", doc.name, None, money(amount), submitted=submitted, submit_failed=failed)
+
+    async def _debit_note_doc(self, invoice: str) -> dict[str, Any]:
+        try:
+            return (await self.client.call_method("erpnext.accounts.doctype.purchase_invoice.purchase_invoice.make_debit_note",
+                                                  {"source_name": invoice})).data
+        except ERPNextError as exc:
+            raise ConversionError(str(exc)) from exc
+
+    async def map_purchase_return(self, invoice: str) -> MappedDocument:
+        source = await self._final("Purchase Invoice", invoice)
+        if source.data.get("is_return"):
+            raise ConversionError(f"{invoice} is itself a return")
+        lines = _merged_lines((await self._debit_note_doc(invoice)).get("items") or [], absolute=True)
+        if not lines:
+            raise ConversionError(f"everything on {invoice} has already been returned")
+        return MappedDocument("Purchase Invoice", invoice, source.data["supplier"], source.data.get("supplier_name") or source.data["supplier"],
+                              tuple(lines))
+
+    async def create_purchase_return(self, invoice: str, lines: list[DraftLine], reference: str, *,
+                                     final: bool = False) -> CreatedDocument:
+        doc = _align_return(await self._debit_note_doc(invoice), lines)
+        doc["update_outstanding_for_self"] = 0  # the debit reduces what we owe on the original bill
+        template = purchase_template(await self.purchase_tax_mode(doc.get("supplier") or ""), await self._company_abbr())
+        if template:  # today's input-GST template, like a new purchase bill
+            doc.update({"taxes_and_charges": template,
+                        "taxes": await self._template_rows("Purchase Taxes and Charges Template", template)})
+        try:
+            made = await self.client.create_draft_document("Purchase Invoice", _clean(doc))
+        except ERPNextValidationError as exc:
+            raise ConversionError(str(exc)) from exc
+        submitted, failed = await self._finalise("Purchase Invoice", made.name) if final else (False, False)
+        total = made.data.get("grand_total")
+        return CreatedDocument("Purchase Invoice", made.name, None, money(abs(Decimal(str(total)))) if total is not None else None,
+                               submitted=submitted, submit_failed=failed)
+
     async def _final(self, doctype: str, name: str) -> Any:
         try:
             doc = await self.client.get_document(doctype, name)
@@ -400,6 +463,20 @@ class ERPNextPort:
                 fields=["account", "debit", "credit"], max_records=20000)
             return [{"root_type": root.get(r["account"]), "debit": r.get("debit"), "credit": r.get("credit")} for r in rows
                     if root.get(r["account"]) in {"Income", "Expense"}]
+        if kind == "bill_stock":  # bought minus sold, from final bills (returns carry negative qty)
+            moved: dict[str, Decimal] = {}
+            for doctype, sign in (("Purchase Invoice", 1), ("Sales Invoice", -1)):
+                names = [r["name"] for r in await self.client.list_all_documents(
+                    doctype, filters={"company": self.company, "docstatus": 1, "is_opening": "No"}, fields=["name"], max_records=3000)]
+                for chunk in range(0, len(names), 200):
+                    filters: list[Any] = [["parent", "in", names[chunk:chunk + 200]]]
+                    if item_code:
+                        filters.append(["item_code", "=", item_code])
+                    for r in await self.client.list_child_rows(f"{doctype} Item", doctype, ["item_code", "qty"], filters=filters):
+                        if r.get("item_code"):
+                            moved[r["item_code"]] = moved.get(r["item_code"], Decimal(0)) + sign * Decimal(str(r.get("qty") or 0))
+            names = {code: item.name for code, item in (await self._item_map()).items()}
+            return [{"item_code": code, "item_name": names.get(code), "qty": qty} for code, qty in moved.items() if qty]
         if kind == "stock":
             filters: dict[str, Any] = {"actual_qty": ["!=", 0]}
             if item_code:
