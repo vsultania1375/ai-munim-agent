@@ -1,115 +1,166 @@
-# AI Munim — run your business's ERP from WhatsApp
+# AI Munim — run your business's books from WhatsApp
 
 [![CI](https://github.com/vsultania1375/ai-munim-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/vsultania1375/ai-munim-agent/actions/workflows/ci.yml)
 
-A WhatsApp agent for Indian small businesses (hardware, cement, CCTV, kirana...). The owner
-types or forwards things the way they already do — *"Gupta ji ko 20 cement bag ka quotation
-bana do"*, a photo of a supplier bill, an old Tally export — and AI Munim turns it into
-drafts in their own **ERPNext**, with exact GST maths and an Approve button before anything
-is written.
+A WhatsApp accountant for Indian small businesses (hardware, cement, CCTV, kirana...). The owner
+writes, speaks or forwards things the way they already do — *"Gupta ji ko 20 cement bag ka bill bana
+do"*, a voice note, a photo of a supplier bill or of the old paper bahi — and AI Munim turns it into
+real documents in **their own ERPNext**, with exact GST maths and one Approve tap before anything is
+written. Customers can pay the bill online through the business's **own Razorpay** account.
 
-**Try it:** message [wa.me/917428051112](https://wa.me/917428051112) and say *Hi*.
+**Try it:** message [wa.me/917428051112](https://wa.me/917428051112) and say *Hi* · Web: [aimunim.duckdns.org](https://aimunim.duckdns.org)
+
+## The core idea: the model understands, code calculates, the owner approves
+
+```
+"Gupta ji ko 20 bag cement, 470 wala rate"
+      │
+      ▼  Claude (closed set of tools, no ERP access)
+find_customer("Gupta ji") → CUST-0001      find_item("cement") → CEM-50
+propose_invoice(CUST-0001, [CEM-50 × 20 @ 470, rate_source=user_stated])
+      │
+      ▼  code: Decimal maths, CGST/SGST vs IGST from the two states, banker's rounding = ERPNext
+Preview card  ── Bill — Gupta Traders · 20 Bag × ₹470 · GST 18% ₹1,692 · Total ₹11,092 ──  [Approve] [Edit] [Cancel]
+      │ one tap (owner)                                   staff taps make a draft for the owner
+      ▼
+ERPNext Sales Invoice submitted → branded PDF on WhatsApp → Razorpay pay link (if the owner switched it on)
+      │ customer pays                                     signed webhook, or a 2-minute status check
+      ▼
+Payment Entry against that bill → "Gupta ji ne ₹11,092 (UPI) pay kiye, bill clear"
+```
+
+- **No number the model writes reaches the books.** Tools take item, qty and a rate *with its source*
+  (price list, stated by the owner, or read from a document); totals and tax are computed in code and
+  match ERPNext to the paisa (live-verified, including the 0.5-paisa banker's-rounding cases).
+- **Tools never write.** Writes happen only on the Approve button, for the exact preview version shown;
+  stale or repeated taps are rejected. Cancel/amend only — nothing is ever deleted.
+- **Never guessed entities.** Customers and items are resolved by code; ambiguous → buttons.
+- **One business, one ERPNext site.** Every query runs with that site's own credentials.
 
 ## What it does
 
 | | |
 |---|---|
-| **Talk, don't type forms** | Quotations, invoices, delivery challans, payments received, new customers, outstanding/overdue, item rates — in English, Hinglish or Hindi. The agent replies in the user's language. |
-| **One open preview, exact money** | Every write is a preview card with ✅ Approve / ✏️ Edit / ❌ Cancel. Totals and GST are computed in code (never by the model) and match the ERPNext draft to the paisa. Stale or repeated approvals are rejected. |
-| **Context that holds** | "rate 470 kar do", "haan", "isse challan banao" resolve against a single conversation state (open preview, pending question, last uploaded document). |
-| **Documents** | Send a bill/invoice photo or PDF; the agent reads it and can turn it into a quotation or challan. |
-| **2-minute onboarding** | New numbers send a GSTIN (offline checksum + state/PAN) or a photo of a GST certificate/visiting card, confirm, pick a business type, and get **their own ERPNext site** in ~30 s. |
-| **Bring old data** | Excel/CSV from Tally, Vyapar, Khatabook or any sheet: columns are detected, previewed as counts, and imported on tap (customers, items with rates/GST, opening balances as a draft entry). |
-| **Full ERP on the web too** | *ERP login* sends a login for `https://<site>.aimunim.duckdns.org`; WhatsApp is one way to run the ERP, the ERPNext desk is the other. |
+| **Sales chain** | Quotation → order → challan → bill, each from the previous one; several at once are queued. Returns (credit notes), cancel, correct (amend), discounts. |
+| **Purchases & expenses** | Forward a supplier bill: purchase invoice with input GST, the bill attached. "500 ka petrol cash me" → expense entry. |
+| **GST (India Compliance)** | In-state CGST+SGST, out-of-state IGST, unregistered parties, HSN checks. |
+| **Business questions** | Sales, collections, dues, profit, top items — periods in IST, Indian financial year. |
+| **Business memory** | "Gupta ji ka usual" is worked out by code from their past bills (items, usual qty, how often). Standing facts the owner gives ("30 din me paisa dete hain") are kept per business. |
+| **Paper to books** | Photo of a bahi page → entries copied, netted per party by code → old dues booked with the photo attached. Tally/Vyapar/Khatabook sheets import too. |
+| **Voice** | Hindi/Hinglish voice notes in (Whisper) and voice replies out (Piper) — both on our own server. |
+| **Bills that look like the shop** | Send the logo: colours are taken from it with the background left out; signature (paper removed), bank/UPI box, terms. |
+| **Online payments** | Each business connects its own Razorpay; the money goes to its bank, never through us. |
+| **Team** | Staff numbers make drafts; the owner finalises with one tap. ERP events (a bill made on the web desk) reach the owner on WhatsApp. |
+| **Talks like you** | Replies in your language and script, and your style: no emojis if you use none, short if you write short, light if you joke. |
+| **Web ERP, no password** | Verify with WhatsApp (QR or tap) and the full ERPNext desk opens, signed in. |
+| **Your own Claude / ChatGPT** | `https://aimunim.duckdns.org/mcp` — an MCP server with OAuth 2.1 (PKCE, WhatsApp verification). Reports, previews with confirm cards, PDFs. |
 
-## Use it from your own Claude or ChatGPT
+## Online payments (Razorpay), per business
 
-Add `https://aimunim.duckdns.org/mcp` as a custom connector (Claude: Settings → Connectors → Add custom
-connector; ChatGPT: Settings → Apps & Connectors, developer mode → create). On Connect, verify with your
-business's WhatsApp number — no password. Your AI can then read reports and prepare bills that you
-confirm in the chat; amounts and GST still come from AI Munim's code.
+The owner says *"online payment chalu karo"*. The bot sends a one-time sign-in link; on that page they
+paste their Razorpay Key ID/Secret (never in chat). Keys are verified with Razorpay and stored per
+business, the secret encrypted. When on, every final bill gets one pay link; a payment is recorded once,
+only against its own business's bill, from either the business's signed webhook or a status check of open
+links every 2 minutes (so it works without any webhook setup). On the shared demo only testers can
+connect, and demo visitors' bills never get links. Production path: Razorpay Partner OAuth ("Connect with
+Razorpay") instead of pasting keys — same stored shape. [Details](docs/ARCHITECTURE.md#online-payments-each-businesss-own-razorpay-munimpayments)
 
-## How it works
+## Architecture today
 
 ```
-WhatsApp → Meta Cloud API → Caddy (HTTPS) → bot (FastAPI)
-  per-chat queue (in order, burst debounce) → route by number
-    new number      → onboarding → own ERPNext site from a pre-created pool
-    existing owner  → agent: ConversationState → Claude + closed tools → preview card
-                      Approve (one tap) → ERPNext document, submitted for the owner + final PDF
-ERPNext (frappe_docker, multi-site) on the same VM; nginx picks the site by Host header
+WhatsApp ─ Meta Cloud API ─▶ Caddy (TLS) ─▶ bot (FastAPI, one container)
+                                             ├ signature check (X-Hub-Signature-256), ack fast
+                                             ├ inbox (SQLite) → one ordered queue per chat; unfinished messages replayed after a restart
+                                             ├ route by number: onboarding · owner · staff · tester
+                                             ├ agent: ConversationState → Claude Haiku + closed tools → preview → Approve
+                                             ├ portal + WhatsApp SSO · MCP server (OAuth 2.1) · Razorpay links
+                                             └ Whisper / Piper / ffmpeg (local)
+                        ERPNext v16 + India Compliance (one bench, one MariaDB database per business, Host-routed)
+Oracle Cloud Always Free · Ampere A1 · 2 OCPU / 12 GB · Mumbai
 ```
 
-Design rules that came out of a failed first version (context loops, stale previews,
-a 3B local model that could not follow Hinglish):
+Measured on the live VM (5 business sites, idle): 2.7 GB of 12 GB RAM in use (MariaDB ~1 GB, ERPNext
+workers ~0.8 GB, bot ~0.1 GB); a business site is ~62 MB of database; Claude cost about **$0.001 per
+model call** (Haiku, cached system prompt). Not load-tested yet — that is the first item below.
 
-- **One state object per chat** instead of many handlers each holding their own state.
-- **The LLM understands, code calculates, the owner approves.** Tools never write.
-- **Buttons for every question**, so a bare "haan" is never ambiguous.
-- **One ERPNext site per business**, so data never crosses tenants.
+## Scaling plan
 
-More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+What breaks first, and what we do about it. Every stage keeps the same rules: per-business site,
+code-computed money, approval before writes.
 
-## Stack
+**Stage 0 — now (one free VM, tens of businesses).** Single bot container, SQLite for chat state and
+audit, one ERPNext bench. Pre-created empty sites (hourly top-up) make onboarding ~30 s. Nightly
+encrypted backups to object storage, 5-minute health checks with WhatsApp alerts, a daily LLM spend cap.
 
-Python 3.11+ · FastAPI · Claude Haiku 5.5 (tool use, vision) · TypeSafe Jev (optional
-turn resolver) · ERPNext v16 (frappe_docker) · Caddy (on-demand TLS) · Meta WhatsApp
-Cloud API · Oracle Cloud Always Free (Ampere A1, 2 OCPU / 12 GB).
+**Stage 1 — ~100 businesses / a few thousand messages a day.**
+- **Load test first** (scripted WhatsApp webhooks + fake LLM) to find the real limit; CPU for PDF printing
+  and speech is the expected first wall, not memory.
+- **Durable queue**: the per-chat in-process queues move to Redis Streams (Redis already runs for
+  ERPNext), partitioned by sender so each chat stays in order. The bot becomes stateless → 2+ replicas.
+- **Postgres** for conversation state, audit, OAuth and payment accounts (SQLite stays for local dev).
+- **Heavy work off the request path**: PDF rendering, Whisper and Piper as separate worker containers.
+- **Spend and abuse caps per business**, not only global; per-business usage on the portal.
+
+**Stage 2 — hundreds to thousands of businesses.**
+- **Many ERPNext benches**, each holding N sites, plus a site directory (business → bench) that the bot,
+  Caddy and the MCP server read. Sites are portable (backup/restore), so rebalancing is moving sites.
+- **MariaDB on its own servers** (primary + replica per group of benches); reports read from replicas.
+- **Media and PDFs in object storage** with signed links (today: local disk with signed, expiring links).
+- **Big customers on a dedicated bench**, so no noisy neighbour.
+
+**Stage 3 — national scale.**
+- Razorpay Partner OAuth for payments; more WhatsApp numbers / higher Meta messaging tiers; GST filing
+  and accountant (CA) access; all data kept in Indian regions.
+
+**Optimising cost and latency (already in place, then next):**
+- Byte-stable system prompt with prompt caching; Haiku by default; small closed tool set.
+- No model call for buttons (Approve/Edit/Cancel, owner decisions) — those are deterministic.
+- Uploaded documents are read once and cached by content hash; "the usual" and all reports are SQL/code.
+- Next: short-TTL cache of item/customer masters per site, batch ERP reads, and a cheaper path for very
+  simple turns (balance lookups) measured against the current one before switching.
+
+## Engineering
+
+- **159 tests** with a scripted fake LLM (no API cost) cover the agent flows, GST, money, chain, payments,
+  OAuth, branding, memory and WhatsApp signals; CI runs ruff + pytest on every push. Real-model checks
+  (`scripts/smoke.py`) run only when prompts change.
+- Security: Meta and Razorpay webhooks HMAC-verified; per-site ERP webhook tokens; OAuth tokens and
+  Razorpay secrets never stored in plain text; secrets only in server env files; no third-party telemetry.
+- Rules for contributors (human or AI): [CLAUDE.md](CLAUDE.md). Design notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Run locally (demo ERP, no ERPNext needed)
 
 ```bash
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-pytest                                             # flows with a scripted fake LLM; free
+pytest                                             # all flows with a scripted fake LLM; free
 cp .env.example .env                               # fill WhatsApp + Anthropic keys
 python -m munim.core.server                        # http://127.0.0.1:8800
 python scripts/dev_tunnel.py                       # quick tunnel + points the Meta webhook at it
 ```
 
-With `ERPNEXT_URL` empty the agent runs on an in-memory demo business (Gupta Traders,
-cement, CCTV...).
+With `ERPNEXT_URL` empty the agent runs on an in-memory demo business (Gupta Traders, cement, CCTV...).
 
 ## Deploy (single VM)
 
 1. Ubuntu 24.04 VM with Docker; open 80/443.
-2. ERPNext: `frappe_docker` `pwd.yml` with random passwords, `FRAPPE_SITE_NAME_HEADER: $$host`,
-   frontend bound to `127.0.0.1`, running the image from `infra/erpnext.Dockerfile` (ERPNext +
-   India Compliance). Add `india_compliance` to `sites/apps.txt`, `bench --site <site> install-app
-   india_compliance` on existing sites, then run `scripts/gst_upgrade.py` in the bot container.
-3. Demo company: `infra/erpnext_seed.py` inside the backend container.
-4. Tenant pool: `bash infra/make_pool.sh 3`.
-5. `docker compose -f infra/docker-compose.yml -p aimunim up -d --build`, then point the
-   Meta webhook to `https://<domain>/wa/webhook`.
+2. ERPNext: `frappe_docker` `pwd.yml` with random passwords, `FRAPPE_SITE_NAME_HEADER: $$host`, frontend
+   bound to `127.0.0.1`, image from `infra/erpnext.Dockerfile` (ERPNext + India Compliance); then
+   `scripts/gst_upgrade.py` in the bot container.
+3. Demo company: `infra/erpnext_seed.py` inside the backend container. Tenant pool: `bash infra/make_pool.sh 3`.
+4. `bash infra/fetch_wheels.sh` (downloads dependencies with retries), then
+   `docker compose -f infra/docker-compose.yml -p aimunim up -d --build`; point the Meta webhook to
+   `https://<domain>/wa/webhook`.
+5. Root cron (`/etc/cron.d/aimunim`): `infra/backup.sh` nightly, `infra/healthcheck.sh` every 5 min,
+   `infra/pool_topup.sh` hourly. Restore: `openssl enc -d -aes-256-cbc -pbkdf2 -pass file:backup.key -in <backup> | tar xz`.
 
-## Backups and health
+## History
 
-- `infra/backup.sh` (root cron in `/etc/cron.d/aimunim`, 03:00 IST): SQL dump of every ERPNext site + bot state + pool keys,
-  encrypted with `/opt/aimunim/backup.key`, uploaded to a private Oracle Object Storage bucket
-  through a write-only pre-authenticated URL. Objects are named by weekday, so the last 7 days
-  are kept without any delete permission.
-- Restore: `openssl enc -d -aes-256-cbc -pbkdf2 -pass file:backup.key -in aimunim-backup-Mon.tar.gz.enc | tar xz`
-- `infra/healthcheck.sh` (same cron file, every 5 min): restarts the bot after two failed `/health` checks and
-  alerts the operator on WhatsApp (once per problem per 6 h) when the bot or ERPNext is down, disk is 85% full,
-  memory is under 600 MB, or there was no successful backup in 26 h. WhatsApp delivers only within 24 h of the
-  operator's last message, so pair it with an external monitor on `/health`.
-- `infra/pool_topup.sh` (hourly): keeps at least two empty ERPNext sites ready for new businesses.
-- Capacity: one bench, one database per business (host-routed). ERPNext runs 3 gunicorn workers × 4 threads on
-  the 2-vCPU VM; CPU (PDF printing, voice) is the first limit. Sites are portable, so scaling out is moving
-  sites to more benches and the database to its own server.
+This repository is the v2 rewrite of an earlier AI Munim prototype (July 2026): new agent core, money
+and approval model, multi-tenant ERPNext, payments, MCP and web access; it reuses the prototype's
+WhatsApp client, ERPNext REST client and Hinglish name matching. Git history was squashed before
+publishing to remove personal data from test fixtures.
 
-## Cost
+## License
 
-Haiku with prompt caching costs roughly **$0.001–0.002 per message**; the VM and domain
-are free tier. Only messages cost money.
-
-## Status and next
-
-Working: WhatsApp agent, previews/approval, one-tap ERPNext documents + PDF, onboarding with own
-site, data import, web login, language following.
-Next: voice notes (STT), live GST portal verification, automatic pool top-up and waitlist
-notification, business-name subdomains, purchase bills.
-
-*This repository is the v2 rewrite of an earlier AI Munim prototype (July 2026): new agent
-core, onboarding, multi-tenant ERPNext and web access; it reuses the prototype's WhatsApp
-client, ERPNext REST client and Hinglish name matching.*
+[MIT](LICENSE)

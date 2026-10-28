@@ -217,6 +217,15 @@ does the conversation, so there is no model call on our side. Each call is writt
   never shown; Piper on the VM speaks it, ffmpeg makes an OGG/Opus voice note. `voice reply band/chalu`.
 - Builds: `infra/fetch_wheels.sh` downloads all wheels with retries; the image installs from them.
 
+## Business memory and style (core/state.py, core/style.py)
+
+- `remember` / `forget` (owner only): standing facts per business, shown to the agent every turn as
+  `business_memory`; ERP data and tool results win, and no rate or amount is taken from memory into a document.
+- `customer_usual`: from the customer's recent final invoices (cancelled ones excluded, so the chain isn't
+  counted three times): items, median qty, how often, last rate/date, buying gap. Code, not the model.
+- Style: each message updates a fading score (emojis, Devanagari, joking, formal, length); the agent gets a
+  `user_style` hint, and fixed messages lose their emojis in code for people who write without them.
+
 ## Evaluation
 
 `tests/` runs every flow with a scripted fake LLM (free, every change).
