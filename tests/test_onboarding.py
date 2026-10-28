@@ -264,8 +264,7 @@ def test_claimed_sites_for_caddy(tmp_path):
 async def test_onboarding_follows_hinglish_user(ob):
     onb, tenants, _, _ = ob
     out, t = await run(onb, tenants, txt("Namaste ji, mujhe setup karna hai"))
-    assert t.data["lang"] == "hi" and "Namaste" in out[0].text and out[0].buttons[0]["title"] == "🚀 Setup shuru"
-    await run(onb, tenants, tap("ob:start"))
+    assert t.data["lang"] == "hi" and t.step == "identity" and "GSTIN" in out[0].text  # asked for setup: straight to GST
     out, t = await run(onb, tenants, txt("27AAPFU0939F1ZX", 2))
     assert "aakhri character" in out[0].text
 
@@ -292,3 +291,20 @@ async def test_daily_new_site_cap_sends_to_demo(tmp_path):
     await run(onb, tenants, tap("ob:ok"))
     out, t = await run(onb, tenants, tap("bt:other"))
     assert t.status == "demo" and t.site is None and "tomorrow" in out[0].text
+
+
+def test_new_numbers_try_the_demo_first():
+    from munim.core.engine import Inbound
+    from munim.core.onboarding import Onboarding
+    from munim.core.tenants import Tenant
+
+    new = Tenant("919800000050")
+    for words in ("Hi", "Gupta ji ka bill bana do 20 cement", "kya kya kar sakte ho"):
+        assert Onboarding.opens_in_demo(Inbound("m", new.phone, "text", text=words), new)
+    for words in ("Hi, I want to set up AI Munim for my business", "setup", "mera GST 06EXBPK8917C1ZJ hai", "apna account banao"):
+        assert not Onboarding.opens_in_demo(Inbound("m", new.phone, "text", text=words), new)  # their own setup, with GST
+    assert Onboarding.opens_in_demo(Inbound("m", new.phone, "image", media=b"x"), new)
+    assert not Onboarding.opens_in_demo(Inbound("m", new.phone, "text", text="Hi"), Tenant("x", role="tester"))
+    assert not Onboarding.opens_in_demo(Inbound("m", new.phone, "text", text="Hi"), Tenant("y", status="onboarding", step="identity"))
+    assert Onboarding.just_greeting(Inbound("m", new.phone, "text", text="Hello bhai!"))
+    assert not Onboarding.just_greeting(Inbound("m", new.phone, "text", text="Hello bhai kya kya kar sakta hai"))

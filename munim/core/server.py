@@ -112,6 +112,7 @@ class SenderQueues:
                 log.exception("processing failed")
 
 
+TRIAL_KINDS = {"text", "audio", "image", "document"}  # button taps (Approve...) don't use up the demo
 DEFAULT_TESTERS = ""  # set MUNIM_V2_TESTERS in the environment
 TEAM_WORDS = {"team", "my team", "staff", "add staff", "staff add", "team add", "add member", "team member", "meri team"}
 
@@ -166,6 +167,7 @@ def create_app(env_file: Path | None = None) -> FastAPI:
                    if erp_url else None)  # shares `pool`; refreshed on demand
     nudge_template = os.environ.get("MUNIM_TEMPLATE_NUDGE", "")  # approved utility template, no parameters
     summary_hour = int(os.environ.get("MUNIM_SUMMARY_HOUR", "9"))
+    demo_limit = int(os.environ.get("MUNIM_DEMO_LIMIT", "25"))  # messages a visitor can try on the demo shop
     onboarding = Onboarding(
         tenants=tenants, provisioner=provisioner, llm=llm.for_feature("onboarding"), pool_dir=pool_dir,
         max_new_sites_per_day=int(os.environ.get("MUNIM_MAX_NEW_SITES_PER_DAY", "3")),
@@ -355,6 +357,17 @@ def create_app(env_file: Path | None = None) -> FastAPI:
             return await owner_decision(tenant, inbound.button_id or "", lang)
         if inbound.kind == "text" and (inbound.text or "").strip().lower() in TEAM_WORDS and tenant.status == "active":
             return team_invite(tenant, lang)
+        intro: list[Outbound] = []
+        # A greeting gets the choice (own setup or demo). A real request, typed or spoken, is answered by the demo shop
+        # at once, so nobody is stuck at a menu; their own setup (with GST) is one tap away.
+        if inbound.kind != "button" and not onboarding.just_greeting(inbound) and onboarding.opens_in_demo(inbound, tenant):
+            if inbound.text:
+                tenant.data["lang"] = detect_lang(inbound.text, tenant.data.get("lang"))
+            if profile_names.get(sender):
+                tenant.data.setdefault("owner_name", profile_names[sender])
+            tenant.status, tenant.step = "demo", "welcome"
+            tenants.save(tenant)
+            intro = [onboarding.demo_intro(tenant)]
         if tenant.status in {"new", "onboarding"} and tenant.role != "tester":
             out = await onboarding.handle(inbound, tenant, notify, profile_names.get(sender))
             if tenant.status == "active" and tenant.site:  # just finished onboarding
@@ -371,12 +384,24 @@ def create_app(env_file: Path | None = None) -> FastAPI:
             tenants.save(tenant)
             return out
         site = tenant.erp_site or DEMO_SITE
+        trial_note: list[Outbound] = []
+        if tenant.status == "demo" and tenant.role != "tester" and inbound.kind in TRIAL_KINDS:
+            used = int(tenant.data.get("demo_used", 0)) + 1
+            lang = tenant.data.get("lang") or detect_lang(inbound.text or "", None)
+            if used > demo_limit:  # the trial is over: their own setup is the way on
+                return [Outbound("buttons", t("demo.limit", lang, n=demo_limit),
+                                 buttons=[{"id": "ob:start", "title": t("ob.btn_own_setup", lang)}])]
+            tenant.data["demo_used"] = used
+            tenants.save(tenant)
+            if demo_limit - used == 3:
+                trial_note = [Outbound("buttons", t("demo.few_left", lang, left=3),
+                                       buttons=[{"id": "ob:start", "title": t("ob.btn_own_setup", lang)}])]
         out = await engine_for(site, tenant.company).handle(inbound, can_submit=tenant.role != "staff", early=notify)
         if tenant.role == "staff":
             await tell_owner(tenant, out)
         else:
             out += await payment_links(tenant, site, out)
-        return out
+        return intro + out + trial_note
 
     # ---- ERP -> WhatsApp ------------------------------------------------
     async def reach(phone: str, items: list[Outbound]) -> bool:

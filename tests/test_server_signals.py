@@ -24,7 +24,7 @@ def app(tmp_path: Path, monkeypatch):
     for key, value in {
         "WA_PHONE_NUMBER_ID": "P1", "WA_APP_SECRET": SECRET, "WA_ACCESS_TOKEN": "x", "ANTHROPIC_API_KEY": "x",
         "MUNIM_V2_TESTERS": TESTER, "MUNIM_STT": "none", "ERPNEXT_URL": "", "MUNIM_V2_POOL_DIR": str(tmp_path / "pool"),
-        "MUNIM_BOT_NUMBER": "", "JEV_API_KEY": "", "MUNIM_SUMMARY": "off",
+        "MUNIM_BOT_NUMBER": "", "JEV_API_KEY": "", "MUNIM_SUMMARY": "off", "MUNIM_DEMO_LIMIT": "5",
     }.items():
         monkeypatch.setenv(key, value)
     sent: list[tuple[str, str]] = []
@@ -36,7 +36,11 @@ def app(tmp_path: Path, monkeypatch):
     async def noop(self, *a, **k):
         return {}
 
+    async def send_buttons(self, to, text, buttons):
+        return await send_text(self, to, text)
+
     monkeypatch.setattr(wa_client.WhatsAppClient, "send_text", send_text)
+    monkeypatch.setattr(wa_client.WhatsAppClient, "send_buttons", send_buttons)  # nothing reaches Meta from tests
     monkeypatch.setattr(wa_client.WhatsAppClient, "start_typing", noop)
     from munim.core.server import create_app
 
@@ -94,3 +98,54 @@ def test_number_change_moves_the_account(app):
     wait_for(lambda: sent)
     assert sent[0][0] == "919800000010" and "number" in sent[0][1]
     assert TenantStore(root / ".run/v2/tenants.db").get("919800000010").status == "active"
+
+
+def test_a_new_number_chooses_then_tries_the_demo_up_to_a_limit(app, monkeypatch):
+    from munim.core import llm as llm_module
+
+    client, sent, root = app
+    asked = []
+
+    async def run_turn(self, *, system, messages, tools, execute):
+        asked.append(messages)
+        return llm_module.AgentResult("Verma Hardware pe ₹2,300 baaki hai.", "end_turn", 1)
+
+    monkeypatch.setattr(llm_module.ClaudeAgentLLM, "run_turn", run_turn)
+    visitor = "919800000077"
+    tenants = TenantStore(root / ".run/v2/tenants.db")
+
+    def say(n: int, words: str, kind: str = "text") -> None:
+        body = {"from": visitor, "id": f"wamid.V{n}", "timestamp": str(int(time.time())), "type": kind}
+        body.update({"text": {"body": words}} if kind == "text" else
+                    {"interactive": {"type": "button_reply", "button_reply": {"id": words, "title": "x"}}})
+        post(client, {"messages": [body]})
+
+    say(1, "Hi")
+    wait_for(lambda: sent)
+    assert "setup" in sent[0][1].lower() and not asked  # a greeting: the choice (own setup or demo), no model call
+    say(2, "ob:demo", "interactive")
+    wait_for(lambda: len(sent) >= 2)
+    assert tenants.get(visitor).status == "demo"
+    for n in range(3, 3 + 5):  # MUNIM_DEMO_LIMIT=5 here
+        say(n, f"Verma ka outstanding dikhao {n}")
+        wait_for(lambda n=n: len(asked) >= n - 2)
+    assert any("3 demo messages left" in text for _, text in sent)  # warned with 3 left
+    say(99, "aur ek baar")
+    wait_for(lambda: any("that was the demo" in text.lower() for _, text in sent))  # the trial is over: own setup next
+    assert len(asked) == 5
+    assert tenants.get(visitor).data["demo_used"] == 5
+
+
+def test_first_message_with_a_question_is_answered_at_once(app, monkeypatch):
+    from munim.core import llm as llm_module
+
+    client, sent, _ = app
+
+    async def run_turn(self, *, system, messages, tools, execute):
+        return llm_module.AgentResult("Main bill, quotation, challan aur hisaab sambhalta hoon.", "end_turn", 1)
+
+    monkeypatch.setattr(llm_module.ClaudeAgentLLM, "run_turn", run_turn)
+    post(client, {"messages": [{"from": "919800000078", "id": "wamid.W1", "timestamp": str(int(time.time())), "type": "text",
+                                "text": {"body": "Hello bhai kya kya kar sakta hai tu"}}]})
+    wait_for(lambda: len(sent) >= 2)
+    assert "demo" in sent[0][1].lower() and sent[1][1].startswith("Main bill")  # intro, then the answer

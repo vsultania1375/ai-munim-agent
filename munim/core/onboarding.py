@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,10 @@ SPREADSHEET_MIMES = {
 }
 SETUP_WORDS = {"setup", "set up", "shuru", "onboard", "onboarding", "account banao", "start setup", "register"}
 DEMO_WORDS = {"demo", "demo dikhao", "pehle demo"}
+# a first message that asks for their own account (the website's 'set up' link says so); anything else opens the demo
+SETUP_RE = re.compile(r"\b(set\s?up|register|onboard(?:ing)?|apna (?:account|business|setup)|my (?:own )?business)\b", re.IGNORECASE)
+GREETING_RE = re.compile(r"^\W*(?:(?:hi+|hello+|hey+|helo|hlo|namaste|namaskar|ram ram|salaam|good (?:morning|afternoon|evening)|"
+                         r"kaise ho|bhai|ji|sir|there|munim|ai munim)\W*)+$", re.IGNORECASE)
 
 BUSINESS_TYPES = [
     ("hardware", "Hardware / Building", "Cement, saria, paint, sanitary"),
@@ -112,6 +117,25 @@ class Onboarding:
         return msg.kind == "text" and (msg.text or "").strip().lower() in SETUP_WORDS
 
     @staticmethod
+    def opens_in_demo(msg: Inbound, tenant: Tenant) -> bool:
+        """A new number that hasn't asked for its own setup goes straight to the demo shop: try first, no GST asked."""
+        fresh = tenant.status == "new" or (tenant.status == "onboarding" and tenant.step == "welcome")
+        if tenant.role == "tester" or not fresh:
+            return False
+        if msg.kind == "button":
+            return (msg.button_id or "") == "ob:demo"
+        words = msg.text or ""
+        return not (find_gstin(words) or SETUP_RE.search(words) or words.strip().lower() in SETUP_WORDS)
+
+    @staticmethod
+    def just_greeting(msg: Inbound) -> bool:
+        return msg.kind == "text" and bool(GREETING_RE.match(msg.text or ""))
+
+    def demo_intro(self, tenant: Tenant) -> Outbound:
+        lang = tenant.data.get("lang")
+        return buttons(t("ob.demo_on", lang), ("ob:start", t("ob.btn_own_setup", lang)))
+
+    @staticmethod
     def is_migration(msg: Inbound) -> bool:
         if msg.kind == "button" and (msg.button_id or "").startswith("mg:"):
             return True
@@ -143,6 +167,9 @@ class Onboarding:
             gstin = find_gstin(msg.text or "")
             if gstin:  # they led with a GSTIN: skip straight ahead
                 return await self._identity_from_gstin(tenant, gstin)
+            if bid == "ob:start" or SETUP_RE.search(msg.text or "") or lowered in SETUP_WORDS:  # asked for their own setup
+                tenant.step = "identity"
+                return [self._ask_identity(lang)]
             return [self._welcome(tenant)]
         if bid == "ob:demo" or lowered in DEMO_WORDS:
             tenant.status = "demo"

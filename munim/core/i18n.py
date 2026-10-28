@@ -343,15 +343,27 @@ STRINGS.update({
     "ob.btn_nogst": {"en": "I don't have GST", "hi": "GST nahi hai"},
     "ob.demo_on": {
         "en": (
-            "👀 Demo mode on! This is a *sample shop* (Gupta Traders, cement, CCTV...). Try:\n"
-            "• Make a quotation for Gupta Traders, 20 cement bags\n• Show Verma Hardware's outstanding\n\n"
-            "Set up your own account any time: type *setup*."
+            "🙏 Hi! I'm *AI Munim*, an accountant on WhatsApp. You're in a *demo shop* (Gupta Traders, cement, CCTV...) — "
+            "just type or speak, nothing to set up. Try:\n"
+            "• Gupta Traders ko 20 cement bag ka bill bana do\n• Verma Hardware ka outstanding dikhao\n"
+            "• This month's sales  • Send a voice note\n\n"
+            "For your own business (with your GST), tap below any time."
         ),
         "hi": (
-            "👀 Demo mode chalu! Ye ek *dummy dukaan* hai (Gupta Traders, cement, CCTV...). Aise try karein:\n"
-            "• Gupta Traders ko 20 cement bag ka quotation bana do\n• Verma ji ka outstanding dikhao\n\n"
-            "Apna khud ka setup kabhi bhi: *setup* likhein."
+            "🙏 Namaste! Main *AI Munim* hoon, WhatsApp pe aapka munim. Aap ek *demo dukaan* me hain (Gupta Traders, "
+            "cement, CCTV...) — bas likhiye ya boliye, kuch setup nahi. Try karein:\n"
+            "• Gupta Traders ko 20 cement bag ka bill bana do\n• Verma ji ka outstanding dikhao\n"
+            "• Is mahine ki sale  • Voice note bhejiye\n\n"
+            "Apne business ke liye (apne GST ke saath) neeche dabaiye, kabhi bhi."
         ),
+    },
+    "demo.limit": {
+        "en": "🙏 That was the demo ({n} messages). Set up your own business to keep going — your own books, with your GST, in 2 minutes.",
+        "hi": "🙏 Demo ke {n} message ho gaye. Aage chalane ke liye apna business setup karein — apne GST ke saath, apni khud ki books, 2 minute me.",
+    },
+    "demo.few_left": {
+        "en": "{left} demo messages left. Like it? Set up your own business any time.",
+        "hi": "Demo ke {left} message bache hain. Pasand aaya? Apna business kabhi bhi setup karein.",
     },
     "ob.btn_own_setup": {"en": "🚀 Set up my own", "hi": "🚀 Apna setup karo"},
     "ob.error": {"en": "Sorry, something went wrong during setup. Try again?", "hi": "Maaf kijiye, setup me ek dikkat aa gayi. Dobara try karein?"},
